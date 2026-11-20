@@ -43,7 +43,7 @@ npm ci --omit=dev=false   # 需要 node_modules/ws 存在
 | 实例 | `iZer7hfbnh8h8qZ`（Windows Server 2025，build 26100，AMD64） |
 | 公网 IP | `101.132.126.224` |
 | 访问地址 | <http://101.132.126.224:3000> |
-| 构建号 | `1d068d84917d`（v1 `9b77644b4354` → … → v6 `111c095011a9` → v7 `95b140418e63` → v8） |
+| 构建号 | `0e8b0ffb485c`（v8 `1d068d84917d` → r12；构建号自 r12 起为 12 位） |
 | 程序目录 | `C:\steel-tide\app` |
 | Node 运行时 | 系统已装 `C:\Program Files\nodejs\node.exe`，v24.19.0 |
 | 守护脚本 | `C:\steel-tide\run.ps1`（项目自带，退出即重启 + 日志按天轮转） |
@@ -63,7 +63,7 @@ C:\steel-tide\
 ├── install.ps1           # 安装/升级脚本
 ├── verify.ps1            # 校验脚本
 ├── uninstall.ps1         # 卸载脚本
-└── app8.zip              # 最近一次部署包（v8；app2–app7 为历史版本）
+└── app9.zip              # 最近一次部署包（r12；app2–app8 为历史版本）
 ```
 
 进程工作目录是 `C:\steel-tide\app`，由 `run.ps1` 以 `node --env-file=.env server.js` 启动，
@@ -85,17 +85,17 @@ powershell -ExecutionPolicy Bypass -File C:\steel-tide\install.ps1 `
 （失败回退 nodejs.org），解压到 `C:\steel-tide\node`。部署包内已带 `node_modules\ws`，
 服务器**无需联网 npm install**。
 
-## 版本升级（最近一次为 v7 → v8）
+## 版本升级（最近一次为 v8 → r12）
 
 同一套脚本已升级过两次（v1 → v2 → v3），流程不变：
 
 ``` powershell
 # 1. 传包到服务器（本次用 CDN 链接；长期建议放内网或 OSS）
-iwr https://aka.doubaocdn.com/s/7UbaG6zn11 -OutFile C:\steel-tide\app8.zip -UseBasicParsing
+iwr https://aka.doubaocdn.com/s/bLzKnKavq8 -OutFile C:\steel-tide\app9.zip -UseBasicParsing
 
 # 2. 幂等升级：不传 -PublicUrl 即保留旧 .env
 powershell -ExecutionPolicy Bypass -File C:\steel-tide\install.ps1 `
-  -AppZip C:\steel-tide\app8.zip -NodeDir "C:\Program Files\nodejs" -NodeVersion v24.19.0 -Port 3000
+  -AppZip C:\steel-tide\app9.zip -NodeDir "C:\Program Files\nodejs" -NodeVersion v24.19.0 -Port 3000
 
 # 3. 复查
 powershell -ExecutionPolicy Bypass -File C:\steel-tide\verify.ps1 -Port 3000
@@ -105,12 +105,12 @@ powershell -ExecutionPolicy Bypass -File C:\steel-tide\verify.ps1 -Port 3000
 
 - 中断约 5 秒（停任务 → 换文件 → 起进程）。内存态对局会丢失，玩家回菜单重开。
 - 客户端与服务端协议强绑定：v3 起把军队变成道路实体并新增技能 / 超级武器 / 补给箱，
-  旧页面必须刷新，否则会因协议不匹配触发重连重载；v5 换了 3D 引擎，v6 增加暂停/倍速，v7/v8 改自动出兵，都要求刷新。
+  旧页面必须刷新，否则会因协议不匹配触发重连重载；v5 换 3D 引擎、v6 加暂停倍速、v7/v8 改自动出兵、r12 改单位与房间协议（就绪检查/加载屏障），升级后所有旧页面都必须刷新。
 - 构建号会变，所有 `/v/<build>/...` 资源 URL 一次性换新，已打开页面会提示刷新。
 - `run.ps1` 会被安装脚本重新覆盖到 `C:\steel-tide\run.ps1`；计划任务保持
   `powershell.exe -File run.ps1 -AppDir <app> -NodeExe <node>`，不需要手工改。
 - `.env` 全程未改动；依赖仍只有 `ws`，服务器没有联网 npm。
-- 回滚：把上一版的 zip（`app7.zip` = v7）用同样命令再跑一次即可，`.env` 不受影响。
+- 回滚：把上一版的 zip（`app8.zip` = v8）用同样命令再跑一次即可，`.env` 不受影响。
 
 ## 配置（`C:\steel-tide\app\.env`）
 
@@ -163,40 +163,56 @@ powershell -ExecutionPolicy Bypass -File C:\steel-tide\uninstall.ps1
 
 日志轮转由 `run.ps1` 自己完成：每次（重）启动前删除 14 天前的 `steel-tide-*.log`，不需要额外计划任务。
 
-## 验收结果（v8，构建 1d068d84917d）
+## 验收结果（r12，构建 0e8b0ffb485c）
 
-上线前开发机测试全绿：
+从 GitHub 拉取（`git merge --ff-only origin/main`，2 个提交、98 个文件、+8318/−1785）后，
+开发机测试全绿（11 个测试套件）：
 
 ```
-模拟（编成/城防/超武/全局技能/补给箱/统计/确定性）、路由 21 组（7615 组城市对）、时钟 10 组
-自动出兵 18 组：手动与自动订单共存、并行路线、a→b→c 接力、replace 覆盖、按路段取消、
-  全局比例 setAutoPct、跨重连保持
-i18n 167 引用键 ok、内置引擎 40 模块 101 条 import、首屏 21 个文件 456 KB / 122 KB brotli
-网络：lan 4ms / 宽带 52ms / 移动 213ms / 丢包抖动 192ms，gaps 0、checksum 0
-暂停倍速：1x=1.03、2x=2.02、0.5x=0.49、1.5x=1.52、0.75x=0.73
-指令幂等、房间选项、desync 恢复、断线 1317ms 回座、12 局 36 人并发、限流 ok
+sim            生产/编成/城防/超武/全局技能/补给箱/统计/确定性
+rules          容量与兵员名单、技能、超级武器、取消订单
+client         预览路线与服务端一致、兵种图形、战斗逻辑与绘制解耦
+route 21 组    7615 组城市对、43 城选路 2.28ms
+auto 18 组     并行路线、a→b→c 接力、replace、按路段取消、setAutoPct
+clock 10 组    暂停/倍速（1x=1.00 2x=1.97 0.5x=0.51 1.5x=1.48 0.75x=0.76）
+net            昵称（去空白/折叠/16 字符/唯一性）、房间码尝试上限（30s 内第 9 次拒绝）、
+               就绪检查（房主在内全员就绪才可开始，改阵营/规则/AI/进出会清空就绪，闲置 2.99s 标记不踢）、
+               加载屏障（未全部加载不开始模拟、3s 超时放行、加载中掉线/重连/房主取消）、
+               断线 1311ms 回座、12 局 36 人并发、限流
+i18n           599 键、223 个引用键
+vendor         42 个模块 113 条 import、首屏 20 个模块不含引擎
+tutorial       11 课全部按步骤走通（1:5 2:4 3:3 4:2 5:3 6:4 7:4 8:5 9:8 11:4 10:4 步）、
+               导航（重试/跳过/课程列表/重开/私密房间/断线重开/离开关闭）
+首屏 23 个文件 647 KB 原始 / 173 KB brotli；网络 gaps 0、checksum 0
 ```
 
 服务器与外部：
 
 ```
-verify.ps1 六项 PASS（task Running / 0.0.0.0:3000 / healthz build 1d068d84917d /
+verify.ps1 六项 PASS（task Running / 0.0.0.0:3000 / healthz build 0e8b0ffb485c /
   index CSP 200 / 同源 ws 101 / 异源 403）
-GET /                            200（17261 bytes）
-GET /v/1d068d84917d/js/game.js   200（108842 bytes）
-GET /v/1d068d84917d/style.css    200（35511 bytes）
+GET /                                    200（19586 bytes）
+GET /v/0e8b0ffb485c/js/game.js           200（144826 bytes）
+GET /v/0e8b0ffb485c/js/units.js          200（63539 bytes）
+GET /v/0e8b0ffb485c/js/tutorial.js       200（12853 bytes）
+<meta name="build" content="0e8b0ffb485c">
 ```
 
-浏览器实操（建房 `QNEM` + 一名简单 AI）：
+浏览器实操：首页出现新手指引（"第一次玩《钢铁洪流》？…开始教程 / 暂时不用"）；
+点"开始教程"进入第 1 课"观察战场"，基地被钉上 A/B/C/D 标签，
+按"+"缩放后自动推进到第 2 步（镜头拖动），说明服务端按真实对局状态检查步骤。
 
-- HUD 新增"集结/进攻"按钮，点击后进入"选择目标中"，工具栏右侧出现"确认出兵（N目标）"。
-- 点击敌方城市可选中（蓝色选中环 + "×"移出标记），按钮变为"确认出兵（1目标）"。
-- 并行路线、接力路线、均分兵力、按路段取消的实际效果由 18 组自动化用例覆盖；
-  界面上"确认出兵"点下去之后的路线绘制我在这一局里没来得及逐帧确认（AI 扩张太快）。
+新增环境变量（均带默认值，`.env` 无需改动）：
 
-补充：v8 改动了 `server.js` / `game/sim.js` / `public/js/route.js` 与渲染层，
-新增了自动派兵的多路线协议字段（`pairs` / `segFrom` / `segTo` / `setPct`），
-但环境变量集合与 v6/v7 完全一致，`.env` 无需改动。
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `NAME_MAX` | 16 | 昵称最大字符数（任意文字脚本） |
+| `JOIN_ATTEMPTS` | 8 | 单连接可尝试房间码次数 |
+| `JOIN_WINDOW_SECONDS` | 30 | 上述尝试的时间窗 |
+| `LOAD_TIMEOUT_SECONDS` | 20 | 开局后等待全部加载的最长时间 |
+| `READY_WARN_SECONDS` | 45 | 未就绪多久标记为闲置（不会自动踢人） |
+
+部署包由仓库脚本生成：`scripts/make-win-bundle.sh` → 802 KB / 108 个文件，不含 test/docs/poc。
 
 ## 版本记录
 
@@ -210,6 +226,7 @@ GET /v/1d068d84917d/style.css    200（35511 bytes）
 | v6 | `111c095011a9` | 自动出兵（持续订单）、暂停与 0.5×–2× 倍速（房主控制、模拟时钟）、`clock.js`、3D 材质纹理 |
 | v7 | `95b140418e63` | 自动出兵的操作重做：HUD"自动/单次"切换（R）、路线上的"×"取消、拖拽划过多个己方基地同时下令 |
 | v8 | `1d068d84917d` | 自动出兵支持多路线并行与均分兵力、a→b→c 接力路线、按路段取消；新增"集结/进攻"（G）多选目标自动规划 |
+| r12 | `0e8b0ffb485c` | 单位与战场体系重做（`units.js`/`battlefield.js`）、11 课可操作新手教程、就绪检查与加载屏障、昵称与房间码限流 |
 
 ## 故障排查（Windows 版）
 
