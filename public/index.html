@@ -12,6 +12,8 @@
 
 <!-- Shared icon set: flat, square-cut, same stroke weight everywhere. -->
 <svg width="0" height="0" class="sprite-sheet" aria-hidden="true">
+  <symbol id="i-rally" viewBox="0 0 20 20"><path d="M5 18V2.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M6 3.5h9.5l-2.6 3.2 2.6 3.3H6z" fill="currentColor"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 20 20"><rect x="4" y="9" width="12" height="8.5" rx="1" fill="currentColor"/><path d="M6.5 9V6.5a3.5 3.5 0 017 0V9" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
   <symbol id="i-globe" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M2.5 10h15M10 2.5c-3.4 3.6-3.4 11.4 0 15M10 2.5c3.4 3.6 3.4 11.4 0 15" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
   <symbol id="i-sound" viewBox="0 0 20 20"><path d="M3 7.5h3.5L11 4v12l-4.5-3.5H3z" fill="currentColor"/><path d="M13.5 7a4.2 4.2 0 010 6M15.8 4.8a7.4 7.4 0 010 10.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square"/></symbol>
   <symbol id="i-mute" viewBox="0 0 20 20"><path d="M3 7.5h3.5L11 4v12l-4.5-3.5H3z" fill="currentColor"/><path d="M13.5 7.5l5 5M18.5 7.5l-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square"/></symbol>
@@ -67,6 +69,15 @@
 
     <button id="btn-host" class="btn primary" data-i18n="home.host"></button>
 
+    <section class="lounge" aria-labelledby="lounge-title">
+      <header class="lounge-head">
+        <b id="lounge-title" data-i18n="lounge.title"></b>
+        <small id="lounge-count"></small>
+      </header>
+      <div id="room-list" class="room-list"></div>
+      <p id="lounge-empty" class="lounge-empty" data-i18n="lounge.empty"></p>
+    </section>
+
     <div class="divider"><span data-i18n="home.orJoin"></span></div>
 
     <form id="join-form" class="join-row">
@@ -74,8 +85,6 @@
              data-i18n-attr="placeholder:home.codePlaceholder;aria-label:home.codeLabel">
       <button class="btn" type="submit" data-i18n="home.join"></button>
     </form>
-
-    <div id="room-list" class="room-list"></div>
 
     <button id="btn-tutorial" class="btn wide" type="button"><span data-i18n="tutorial.menu"></span><small id="tut-progress"></small></button>
     <a class="btn ghost wide" href="armory.html" data-i18n="armory.open"></a>
@@ -95,12 +104,32 @@
   </div>
 </main>
 
+<div id="key-dialog" class="hidden" role="dialog" aria-modal="true" aria-labelledby="key-title">
+  <form class="panel" id="key-form">
+    <h2 id="key-title"></h2>
+    <p id="key-sub" class="hint"></p>
+    <label class="field"><span data-i18n="lounge.keyField"></span>
+      <input id="key-input" maxlength="16" autocomplete="off" autocapitalize="off" spellcheck="false">
+    </label>
+    <p id="key-error" class="hint warn" role="alert"></p>
+    <div class="key-actions">
+      <button class="btn ghost" type="button" id="key-cancel" data-i18n="lounge.cancel"></button>
+      <button class="btn primary" type="submit" data-i18n="home.join"></button>
+    </div>
+  </form>
+</div>
+
 <main id="room" class="screen hidden">
   <div class="panel wide">
     <header class="room-head">
-      <div>
+      <div class="room-title">
         <small data-i18n="room.label"></small>
+        <div class="room-name-row">
+          <input id="room-name" class="room-name" maxlength="24" autocomplete="off" spellcheck="false" data-i18n-attr="aria-label:room.nameLabel;title:room.nameLabel">
+          <span id="room-lock" class="room-lock hidden"><svg class="ico"><use href="#i-lock"/></svg><span data-i18n="room.private"></span></span>
+        </div>
         <div class="room-code-row">
+          <small data-i18n="room.codeLabel"></small>
           <div id="room-code" class="room-code"></div>
           <button id="btn-copy-code" class="btn small" type="button" data-i18n="room.copyCode"></button>
         </div>
@@ -133,6 +162,28 @@
       <input type="checkbox" id="opt-crates">
       <span><b data-i18n="room.crates"></b><small data-i18n="room.cratesHint"></small></span>
     </label>
+
+    <label class="field weather-field" id="opt-weather-row">
+      <span data-i18n="room.weather"></span>
+      <select id="opt-weather">
+        <option value="random" data-i18n="weather.random"></option>
+        <option value="rain" data-i18n="weather.rain"></option>
+        <option value="snow" data-i18n="weather.snow"></option>
+        <option value="sun" data-i18n="weather.sun"></option>
+        <option value="night" data-i18n="weather.night"></option>
+      </select>
+    </label>
+
+    <div class="opt" id="opt-private-row">
+      <input type="checkbox" id="opt-private" data-i18n-attr="aria-label:room.privateOpt">
+      <span>
+        <b data-i18n="room.privateOpt"></b><small data-i18n="room.privateHint"></small>
+        <span class="key-row">
+          <input id="room-key" maxlength="16" autocomplete="off" autocapitalize="off" spellcheck="false" data-i18n-attr="placeholder:room.keyPlaceholder;aria-label:room.keyLabel">
+          <button id="btn-set-key" class="btn small" type="button" data-i18n="room.keySet"></button>
+        </span>
+      </span>
+    </div>
 
     <button id="btn-ready" class="btn ready" type="button"></button>
     <button id="btn-start" class="btn primary" data-i18n="room.start"></button>
@@ -188,7 +239,7 @@
       <button data-pct="1">100%</button>
     </div>
     <button id="btn-auto" class="btn tiny auto" data-i18n-attr="title:hud.autoTitle"><svg class="ico"><use href="#i-auto"/></svg><span data-i18n="hud.auto"></span></button>
-    <button id="btn-rally" class="btn tiny rally" data-i18n-attr="title:hud.rallyTitle"><span data-i18n="hud.rally"></span></button>
+    <button id="btn-rally" class="btn tiny rally" data-i18n-attr="title:hud.rallyTitle;aria-label:hud.rallyTitle"><svg class="ico"><use href="#i-rally"/></svg><span data-i18n="hud.rally"></span></button>
     <button id="btn-rally-go" class="btn tiny rally-go hidden"></button>
     <button id="btn-auto-stop" class="btn tiny hidden"></button>
   </div>
@@ -207,6 +258,12 @@
     <div id="skill-tip" class="hidden"></div>
     <div id="buffs"></div>
     <div id="skills"></div>
+  </div>
+
+  <div id="countdown" class="hidden" role="timer" aria-live="assertive">
+    <span id="cd-label"></span>
+    <b id="cd-num"></b>
+    <small id="cd-hint"></small>
   </div>
 
   <div id="tut-pins" aria-hidden="true"></div>

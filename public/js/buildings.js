@@ -3,6 +3,7 @@
 // and lists the animated details that are drawn live over the baked sprite.
 import { Model, F } from './iso.js';
 import { FACTIONS } from './factions.js';
+import { pick } from './modelset.js';
 import { YARD } from './scenery.js';
 
 const TAU = Math.PI * 2;
@@ -873,6 +874,12 @@ export function buildBase(f, sub, level, tc) {
   const key = `${f}|${sub}|${level}|${tc.id}`;
   let b = memo.get(key);
   if (b) return b;
+  const alt = pick('base', f, sub, level, tc);            // an alternative model set (see modelset.js)
+  if (alt) {
+    b = { model: alt.model, live: alt.live || [], top: alt.top * BS };
+    memo.set(key, b);
+    return b;
+  }
   const m = new Model(), live = [];
   let top;
   if (f === 'neutral') { top = NEUTRAL_SET[level](m, tc); DETAIL.neutral[level](m, tc); }

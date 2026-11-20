@@ -1,5 +1,6 @@
 // Lobby, room and connection handling. The match itself lives in game.js.
-import { GameView } from './game.js';
+import { GameView, setUnitScale, setFormation } from './game.js';
+import { loadModelSet } from './modelset.js';
 import { COLORS } from './art.js';
 import { insigniaURL } from './buildings.js';
 import { FACTION_IDS, subIds, normalize } from './factions.js';
@@ -16,6 +17,7 @@ const store = {
   set(area, k, v) { try { area.setItem(k, v); } catch { /* private mode */ } },
 };
 
+const SHOWCASE = new URLSearchParams(location.search).has('showcase');   // development: the frozen model showcase (the server refuses it elsewhere)
 const state = {
   ws: null,
   id: null,
@@ -27,8 +29,12 @@ const state = {
   me: -1,            // my seat in the running match
   overlay: null,     // what the end-of-match overlay shows, so it can be re-translated
   pendingJoin: (new URLSearchParams(location.search).get('room') || '').toUpperCase(),
+  showcase: SHOWCASE,   // development: open the frozen model showcase
   wasIdle: false,    // whether I am currently flagged idle in the lobby (to warn once per time)
 };
+
+// An alternative model set (?models=name) is fetched before the first match so every model comes from it.
+{ const set = await loadModelSet(); if (set && set.unitScale) setUnitScale(set.unitScale); if (set && set.formation) setFormation(set.formation); }
 
 const view = new GameView($('cv'), { hud: $('hud-players'), upgrade: $('btn-upgrade'), cityActions: $('city-actions'), info: $('info'), gl: $('gl') }, {
   send: (from, to, pct, id) => send({ t: 'send', from, to, pct, id }),
@@ -52,6 +58,8 @@ const view = new GameView($('cv'), { hud: $('hud-players'), upgrade: $('btn-upgr
   onAutos: () => syncAuto(),
   resync: () => send({ t: 'resync' }),
   notify: (code, params) => toast(t(`game.${code}`, params)),
+  // A skill pressed while it cannot be used (locked, charging, cooling down): say why, aim nothing.
+  refused: why => toast(t(`skills.refused.${why}`)),
   onElim: p => {
     if (p === state.me) { if (view.winner === null) showDefeat(); }
     else toast(t('game.eliminated', { name: view.pname(p) }));
@@ -81,8 +89,11 @@ function current() {
 // The playable tutorial: lessons are private single-player rooms run by the server (tutorial.js).
 const tut = initTutorial({ view, send, toast: msg => toast(msg), name: () => myName(), faction: () => myFaction() });
 
+const intro = { until: 0, timer: 0, shown: -1 };   // the start countdown (see startIntro)
+
 function show(id) {
   for (const s of ['home', 'room', 'game']) $(s).classList.toggle('hidden', s !== id);
+  if (id !== 'game' && intro.until) endIntro();
 }
 
 let toastTimer = 0;
@@ -223,7 +234,8 @@ function connect() {
     net.rtt = null;
     net.lastMsg = performance.now();
     setNet('online');
-    send({ t: 'hello', name: myName(), token: store.get(sessionStorage, 'st_token') });
+    // The showcase never resumes a session: every load is its own fresh scene, even in a tab that inherited another tab's storage.
+    send({ t: 'hello', name: myName(), token: SHOWCASE ? undefined : store.get(sessionStorage, 'st_token') });
     clearInterval(net.ping);
     net.ping = setInterval(() => {
       if (performance.now() - net.lastMsg > STALE_MS) return ws.close();   // link went quiet
@@ -261,7 +273,7 @@ const handlers = {
     state.lan = m.lan;
     state.port = m.port;
     state.publicUrl = m.publicUrl;
-    store.set(sessionStorage, 'st_token', m.token);
+    if (!SHOWCASE) store.set(sessionStorage, 'st_token', m.token);
 
     const meta = document.querySelector('meta[name="build"]');
     if (meta && m.build && meta.content !== m.build && !net.warnedBuild) {
@@ -269,7 +281,10 @@ const handlers = {
       toast(t('net.update'));
     }
 
-    if (state.pendingJoin) {
+    if (state.showcase) {
+      state.showcase = false;
+      setTimeout(() => { if (!state.room) send({ t: 'showcase', scene: Number(new URLSearchParams(location.search).get('showcase')) || 1 }); }, 150);
+    } else if (state.pendingJoin) {
       // Give a session resume (which arrives as a `room` message) a moment to win.
       const code = state.pendingJoin;
       state.pendingJoin = '';
@@ -302,11 +317,13 @@ const handlers = {
 
   rooms(m) {
     state.rooms = m.rooms;
+    state.roomsOpen = m.open || m.rooms.length;
     renderRoomList();
   },
 
   room(m) {
     state.room = m;
+    closeKey();
     setUrlRoom(m.tutorial ? '' : m.code);          // a lesson room is nobody else's business: no invite link
     if (m.state === 'lobby') {
       view.stop();
@@ -343,8 +360,10 @@ const handlers = {
   },
 
   // The loading barrier has lifted: the match is running.
-  go() {
-    if (!load.on) return;
+  go(m) {
+    // A new match counts down first (real time, measured from when the server said so).
+    intro.until = m && m.countdown ? performance.now() + m.countdown : 0;
+    if (!load.on) return startIntro();
     load.playing = true;
     if (!load.goAt) load.goAt = performance.now();
     if (load.done) endLoading(true); else renderLoading();
@@ -374,6 +393,12 @@ const handlers = {
   },
 
   err(m) {
+    // A private room: ask for its key (again, if the one given was wrong) instead of a passing note.
+    if (m.code === 'key_required' || m.code === 'key_wrong') {
+      const known = state.rooms.find(r => r.code === m.room);
+      return askKey(m.room, m.name || (known && roomTitle(known)), m.code === 'key_wrong' ? t('errors.key_wrong') : '');
+    }
+    if (m.code === 'slow' && keyAsk.code) { $('key-error').textContent = t('errors.slow', { s: m.retry }); return; }
     const key = `errors.${m.code}`;
     const msg = t(key, { s: m.retry, names: (m.who || []).join(t('game.listSep')) });
     toast(msg === key ? t('errors.generic') : msg);
@@ -383,21 +408,77 @@ const handlers = {
 
 // ---------------------------------------------------------------- home
 
+/** What a room is called: the title its host gave it, or "<host>'s room". */
+function roomTitle(r, host) {
+  return r.name || t('home.roomEntry', { host: host != null ? host : r.host });
+}
+
+/** An icon from the sprite sheet in index.html. */
+function icon(id) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'ico');
+  svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  use.setAttribute('href', `#${id}`);
+  svg.append(use);
+  return svg;
+}
+
+// The lounge: every room waiting for players. Open rooms join on a click, private ones ask for the key.
 function renderRoomList() {
   const box = $('room-list');
   box.textContent = '';
+  const n = state.rooms.length, open = Math.max(n, state.roomsOpen || 0);
+  $('lounge-count').textContent = open > n ? t('lounge.countMore', { n, total: open }) : t('lounge.count', { n });
+  $('lounge-empty').classList.toggle('hidden', n > 0);
   for (const r of state.rooms) {
-    const b = el('button');
+    const b = el('button', r.private ? 'private' : '');
     b.type = 'button';
-    b.append(
-      el('span', 'rl-code', r.code),
-      el('span', 'rl-meta', t('home.roomEntry', { host: r.host })),
-      el('span', 'rl-count', t('home.roomCount', { n: r.n, max: r.max })),
-    );
-    b.onclick = () => { send({ t: 'name', name: myName() }); send({ t: 'join', code: r.code, ...myFaction() }); };
+    const full = r.n >= r.max;
+    const extras = [t('lounge.host', { host: r.host })];
+    if (r.crates) extras.push(t('room.crates'));
+    if (r.weather) extras.push(t(`weather.${r.weather}`));
+    const main = el('span', 'rl-main');
+    main.append(el('span', 'rl-name', roomTitle(r)), el('span', 'rl-sub', extras.join(' · ')));
+    b.append(main);
+    if (r.private) { const lock = el('span', 'rl-lock'); lock.append(icon('i-lock'), el('span', '', t('lounge.private'))); b.append(lock); }
+    b.append(el('span', 'rl-count', t('home.roomCount', { n: r.n, max: r.max })), el('span', 'rl-join', t(full ? 'lounge.full' : 'home.join')));
+    b.disabled = full;
+    b.setAttribute('aria-label', `${roomTitle(r)} · ${t('home.roomCount', { n: r.n, max: r.max })}${r.private ? ` · ${t('lounge.private')}` : ''}`);
+    b.onclick = () => (r.private ? askKey(r.code, roomTitle(r)) : joinRoom(r.code));
     box.append(b);
   }
 }
+
+function joinRoom(code, key) {
+  sfx.unlock();
+  send({ t: 'name', name: myName() });
+  send({ t: 'join', code, key: key || undefined, ...myFaction() });
+}
+
+// A private room asks for its key. The key goes to the server with the join and nowhere else:
+// not into the address bar, not into storage.
+const keyAsk = { code: '', title: '' };
+function askKey(code, title, error) {
+  keyAsk.code = code;
+  keyAsk.title = title || t('lounge.roomCode', { code });
+  $('key-title').textContent = keyAsk.title;
+  $('key-sub').textContent = t('lounge.keyPrompt');
+  $('key-error').textContent = error || '';
+  $('key-input').value = '';
+  $('key-dialog').classList.remove('hidden');
+  $('key-input').focus();
+}
+function closeKey() { keyAsk.code = ''; $('key-dialog').classList.add('hidden'); }
+$('key-cancel').onclick = () => { closeKey(); if (!state.room) setUrlRoom(''); };
+$('key-dialog').addEventListener('pointerdown', e => { if (e.target === $('key-dialog')) $('key-cancel').onclick(); });
+$('key-dialog').addEventListener('keydown', e => { if (e.key === 'Escape') $('key-cancel').onclick(); });
+$('key-form').onsubmit = e => {
+  e.preventDefault();
+  const key = $('key-input').value.trim();
+  if (!key) { $('key-error').textContent = t('errors.key_required'); return; }
+  joinRoom(keyAsk.code, key);
+};
 
 $('name').value = store.get(localStorage, 'st_name') || '';
 $('name').addEventListener('change', () => send({ t: 'name', name: myName() }));
@@ -413,8 +494,7 @@ $('join-form').onsubmit = e => {
   sfx.unlock();
   const code = $('code').value.trim().toUpperCase();
   if (code.length !== 4) return toast(t('errors.code_length'));
-  send({ t: 'name', name: myName() });
-  send({ t: 'join', code, ...myFaction() });
+  joinRoom(code);
 };
 
 // ---------------------------------------------------------------- room
@@ -482,6 +562,22 @@ function renderRoom() {
   const r = state.room;
   const isHost = r.hostId === state.id;
   $('room-code').textContent = r.code;
+  // The room's title: the host edits it in place; everyone else reads it.
+  const hostP = r.players.find(p => p.id === r.hostId);
+  const title = $('room-name');
+  title.disabled = !isHost;
+  title.placeholder = roomTitle({ name: '' }, hostP ? playerName(hostP) : '?');
+  if (document.activeElement !== title) title.value = roomTitle(r, hostP ? playerName(hostP) : '?');
+  $('room-lock').classList.toggle('hidden', !r.private);
+  // Private room: the host switches it on and sets the key; guests only see the lock.
+  $('opt-private-row').classList.toggle('hidden', !isHost);
+  if (isHost) {
+    const keyBox = $('room-key');
+    $('opt-private').checked = !!r.private || state.keyDraft;
+    keyBox.parentElement.classList.toggle('hidden', !$('opt-private').checked);
+    if (document.activeElement !== keyBox) keyBox.value = r.key || '';
+    if (r.private) state.keyDraft = false;
+  }
   // Typing a name must survive the list being rebuilt by someone else's change.
   const typing = document.activeElement && document.activeElement.classList.contains('pname-edit')
     ? { value: document.activeElement.value, a: document.activeElement.selectionStart, b: document.activeElement.selectionEnd } : null;
@@ -575,6 +671,8 @@ function renderRoom() {
   // Room settings: the host edits them, everyone sees them.
   $('opt-crates').checked = !!(r.opts && r.opts.crates);
   $('opt-crates').disabled = !isHost;
+  $('opt-weather').value = (r.opts && r.opts.weather) || 'random';
+  $('opt-weather').disabled = !isHost;
   // Ready check: everyone present says so, the host included; only then can the host start.
   const me = r.players.find(p => p.id === state.id);
   const notReady = r.players.filter(p => !p.ai && p.connected && !p.ready);
@@ -600,12 +698,40 @@ for (const b of $('host-controls').querySelectorAll('button')) {
   b.onclick = () => send({ t: 'addAI', level: b.dataset.ai });
 }
 $('opt-crates').onchange = e => send({ t: 'opt', crates: e.target.checked });
+$('opt-weather').onchange = e => send({ t: 'opt', weather: e.target.value });
 $('btn-start').onclick = () => { sfx.unlock(); send({ t: 'start' }); };
 $('btn-ready').onclick = () => {
   sfx.unlock();
   const me = state.room && state.room.players.find(p => p.id === state.id);
   send({ t: 'ready', on: !(me && me.ready) });
 };
+$('room-name').onkeydown = e => { if (e.key === 'Enter') e.target.blur(); else if (e.key === 'Escape') { e.target.value = (state.room && state.room.name) || e.target.placeholder; e.target.blur(); } };
+$('room-name').onfocus = e => e.target.select();
+$('room-name').onchange = e => {
+  // Emptied, or left as the default "<host>'s room": no title of its own, so it follows the host's name.
+  let v = e.target.value.replace(/\s+/g, ' ').trim();
+  if (v === e.target.placeholder) v = '';
+  e.target.value = v || e.target.placeholder;
+  if (state.room && state.room.hostId === state.id && v !== (state.room.name || '')) send({ t: 'roomName', name: v });
+};
+// Private room: ticking the box opens the key field; the room turns private once a key is set.
+const commitKey = () => {
+  const v = $('room-key').value.replace(/\s+/g, '');
+  $('room-key').value = v;
+  if (!state.room || state.room.hostId !== state.id) return;
+  if (!v && !state.room.private) return toast(t('room.keyEmpty'));
+  if (v !== (state.room.key || '')) send({ t: 'roomKey', key: v });
+  if (v) toast(t('room.keySaved'));
+};
+$('opt-private').onchange = e => {
+  state.keyDraft = e.target.checked;
+  if (!e.target.checked) { $('room-key').value = ''; if (state.room && state.room.private) send({ t: 'roomKey', key: '' }); }
+  renderRoom();
+  if (e.target.checked) $('room-key').focus();
+};
+$('btn-set-key').onclick = commitKey;
+$('room-key').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); commitKey(); } };
+
 $('btn-copy-code').onclick = async () => {
   const b = $('btn-copy-code');
   const ok = state.room && await copyText(state.room.code);
@@ -644,7 +770,7 @@ function renderLoading() {
   if (!load.on) return;
   const r = state.room;
   $('load-title').textContent = t(load.msg && !load.msg.loading ? 'loading.rejoin' : 'loading.title');
-  $('load-sub').textContent = r ? (r.tutorial ? t('tutorial.loading') : t('loading.room', { code: r.code })) : '';
+  $('load-sub').textContent = r ? (r.tutorial ? t('tutorial.loading') : (r.name || t('loading.room', { code: r.code }))) : '';
   const list = $('load-stages');
   list.textContent = '';
   for (const id of LOAD_STAGES) {
@@ -716,6 +842,45 @@ async function beginLoading(m) {
   }
 }
 
+// The start countdown. The server holds the simulation for a few seconds after loading; this
+// client shows the numbers, with the camera on the player's own base (see GameView.intro).
+
+/** Begin (or carry on) the countdown if one is running. Returns whether it is. */
+function startIntro() {
+  clearInterval(intro.timer);
+  const m = load.msg, box = $('countdown');
+  const left = () => Math.ceil((intro.until - performance.now()) / 1000);
+  if (!m || !intro.until || left() <= 0 || m.winner !== null) { endIntro(); return false; }
+  const mine = m.players[m.you];
+  box.style.setProperty('--c', mine ? COLORS[mine.color].main : '#ffd34d');
+  $('cd-label').textContent = t('game.countdown.title');
+  $('cd-hint').textContent = mine ? t('game.countdown.base', { color: t(`colors.${COLORS[mine.color].id}`) }) : t('game.countdown.watch');
+  box.classList.remove('hidden');
+  intro.shown = -1;
+  view.intro(true);
+  const tick = () => {
+    const n = left();
+    if (n <= 0) return endIntro(true);
+    if (n === intro.shown) return;
+    intro.shown = n;
+    const num = $('cd-num');
+    num.textContent = String(n);
+    num.classList.remove('tick'); void num.offsetWidth; num.classList.add('tick');
+    sfx.tick();
+  };
+  tick();
+  intro.timer = setInterval(tick, 100);
+  return true;
+}
+
+function endIntro(go) {
+  clearInterval(intro.timer);
+  intro.until = 0;
+  $('countdown').classList.add('hidden');
+  view.intro(false);
+  if (go) { sfx.go(); banner(t('game.countdown.go'), '#ffd34d'); }
+}
+
 /** Put the match on screen (what `start` used to do directly). */
 function enterMatch(m) {
   view.start(m);
@@ -734,6 +899,7 @@ function endLoading(entered) {
   renderLoading();
   if (!entered || !m) return;
   const mine = m.players[m.you];
+  if (startIntro()) return;
   if (mine && m.winner === null && m.time < 2) banner(t('game.youCommand', { color: t(`colors.${COLORS[mine.color].id}`) }), COLORS[mine.color].main);
 }
 
@@ -895,6 +1061,11 @@ function showSkillTip(def, targeting) {
   tip.classList.remove('hidden');
 }
 
+// The model showcase (development only: the server refuses it otherwise) hands the view to the console for framing shots.
+if (SHOWCASE) { window.__view = view; view.zoomMax = 60; }   // development: the showcase can be inspected far closer than a match
+// Preview aid: ?weather=rain|snow|sun|night shows every match on this screen under that sky (looks only).
+{ const w = new URLSearchParams(location.search).get('weather'); if (w) view.weatherPick = w; }
+
 let tipFor = -1;
 setInterval(() => {
   if (current() !== 'game' || !skillButtons.length) return;
@@ -916,7 +1087,7 @@ setInterval(() => {
     b.style.setProperty('--p', p.toFixed(3));
     b.disabled = !can || !ready;
     b.classList.toggle('ready', ready && can);
-    b.classList.toggle('locked', def.super && s.l3 < s.l3Need);
+    b.classList.toggle('locked', !!def.super && s.l3 < s.l3Need);
     b.classList.toggle('active', !!view.targeting && view.targeting.slot === slot);
     if (label.textContent !== text) label.textContent = text;
   }

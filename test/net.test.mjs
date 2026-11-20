@@ -28,7 +28,7 @@ const ORIGIN = `http://127.0.0.1:${PROXY}`;
 
 const server = spawn(process.execPath, ['server.js'], {
   cwd: root,
-  env: { ...process.env, NODE_ENV: 'production', PORT: String(PORT), HOST: '127.0.0.1', ALLOWED_ORIGINS: `${ORIGIN},http://127.0.0.1:${PORT}`, MAX_CONN_PER_IP: '200', RECONNECT_GRACE_MS: '20000', LOG_LEVEL: 'warn', READY_WARN_SECONDS: '2', LOAD_TIMEOUT_SECONDS: '3' },
+  env: { ...process.env, NODE_ENV: 'production', PORT: String(PORT), HOST: '127.0.0.1', ALLOWED_ORIGINS: `${ORIGIN},http://127.0.0.1:${PORT}`, MAX_CONN_PER_IP: '200', RECONNECT_GRACE_MS: '20000', LOG_LEVEL: 'warn', READY_WARN_SECONDS: '2', LOAD_TIMEOUT_SECONDS: '3', START_COUNTDOWN_SECONDS: '0' },
   stdio: ['ignore', 'inherit', 'inherit'],
 });
 const stop = () => { try { server.kill(); } catch { /* gone */ } };

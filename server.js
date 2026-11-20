@@ -6,7 +6,7 @@ const os = require('os');
 const zlib = require('zlib');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
-const { Game } = require('./game/sim');
+const { Game, makeGroup } = require('./game/sim');
 const { Pace } = require('./game/clock');
 const { BALANCE, MAX_PLAYERS, FACTIONS } = require('./game/config');
 const { cityRec, armyRec, armySig, playerRecs, hashGame, zones } = require('./game/proto');
@@ -37,11 +37,19 @@ const cfg = {
   joinWindowMs: Math.max(1, int(process.env.JOIN_WINDOW_SECONDS, 30)) * 1000,   // ...within this long
   readyWarnMs: Math.max(1, int(process.env.READY_WARN_SECONDS, 45)) * 1000,     // not ready this long while others wait: flagged idle
   loadTimeoutMs: Math.max(1, int(process.env.LOAD_TIMEOUT_SECONDS, 20)) * 1000, // a match starts at the latest this long after Start
+  roomNameMax: Math.max(4, int(process.env.ROOM_NAME_MAX, 24)),                // room title length, in characters
+  roomKeyMax: 16,                                                            // private-room key length, in characters
+  keyAttempts: Math.max(1, int(process.env.KEY_ATTEMPTS, 10)),               // wrong keys a private room takes from everybody together...
+  keyWindowMs: Math.max(1, int(process.env.KEY_WINDOW_SECONDS, 60)) * 1000,     // ...within this long, before it refuses all tries for a while
+  startCountdownMs: Math.max(0, Math.min(30, int(process.env.START_COUNTDOWN_SECONDS, 5))) * 1000,   // "get ready" after loading; 0 turns it off
 };
 const PROD = cfg.env === 'production';
 if (cfg.publicUrl) cfg.allowedOrigins.push(new URL(cfg.publicUrl).origin);
 
 const PUB = path.join(__dirname, 'public');
+// The sky a match is played under: drawing only, the rules never read it. The names are the
+// client's (public/js/weather.js); 'random' picks one of them when the match starts.
+const WEATHERS = ['rain', 'snow', 'sun', 'night'];
 const DT = 0.05;              // simulation step (seconds)
 const SNAP_MS = 100;           // state update at most this often, in real time (10 per second at any game speed)
 const IDLE_EVERY = 10;        // ...but at least this often when nothing changed
@@ -108,7 +116,8 @@ function loadAssets() {
   // parallel instead of discovering them one import at a time.
   const preload = files
     // (not /js/3d/: the 3D renderer and the engine behind it load on demand, only when a match uses them)
-    .filter(f => f.startsWith('/js/') && !f.startsWith('/js/3d/') && f.endsWith('.js') && f !== '/js/armory.js')
+    // (nor the model sets the game does not load by default: /js/sets/a*.js is the default set, see public/js/modelset.js)
+    .filter(f => f.startsWith('/js/') && !f.startsWith('/js/3d/') && f.endsWith('.js') && f !== '/js/armory.js' && (!f.startsWith('/js/sets/') || /^\/js\/sets\/a[.-]/.test(f)))
     .map(f => `<link rel="modulepreload" href="v/${build}${f}">`)
     .join('\n');
 
@@ -276,6 +285,8 @@ function roomMsg(room) {
   return {
     t: 'room',
     code: room.code,
+    name: room.name || '',                       // the title the host gave it ('' = "<host>'s room")
+    private: !!room.key,                         // joining needs the key; the key itself goes to the host only
     hostId: room.hostId,
     state: room.state,
     max: MAX_PLAYERS,
@@ -330,19 +341,46 @@ function allReady(room) {
 }
 
 function broadcastRoom(room) {
-  broadcast(room, roomMsg(room));
+  sendRoom(room);
   broadcastLobby();
 }
 
+/** The room as it stands, to everyone in it. */
+function sendRoom(room) {
+  const msg = roomMsg(room);
+  if (!room.key) broadcast(room, msg);
+  else {
+    // A private room: only the host is told the key (to read it out or change it).
+    const plain = JSON.stringify(msg), withKey = JSON.stringify({ ...msg, key: room.key });
+    for (const p of room.players) {
+      if (p.client && p.connected && p.client.ws.readyState === 1) p.client.ws.send(p.id === room.hostId ? withKey : plain);
+    }
+  }
+}
+
+// The lounge: every room that is waiting for players, for everyone who is not in a room.
+// A private room is listed (with a lock) but never its key; lessons and showcases are not rooms.
 function lobbyMsg() {
   const out = [];
+  let open = 0;
   for (const r of rooms.values()) {
     if (r.state !== 'lobby') continue;
+    open++;
+    if (out.length >= 50) continue;
     const host = r.players.find(p => p.id === r.hostId);
-    out.push({ code: r.code, host: host ? host.name : '?', n: r.players.length, max: MAX_PLAYERS });
-    if (out.length >= 30) break;
+    out.push({
+      code: r.code, name: r.name || '', host: host ? host.name : '?',
+      n: r.players.length, humans: r.players.filter(p => !p.bot).length, max: MAX_PLAYERS,
+      private: !!r.key || undefined, crates: r.opts.crates || undefined, weather: r.opts.weather && r.opts.weather !== 'random' ? r.opts.weather : undefined,
+    });
   }
-  return { t: 'rooms', rooms: out };
+  return { t: 'rooms', rooms: out, open };
+}
+
+/** Constant-time comparison of a typed key with the room's. */
+function keyMatches(room, key) {
+  const h = v => crypto.createHash('sha256').update(String(v)).digest();
+  return crypto.timingSafeEqual(h(room.key), h(key));
 }
 
 function broadcastLobby() {
@@ -372,11 +410,17 @@ function freeColor(room) {
  * (counted as characters, not UTF-16 units). Names are only ever shown as text, and
  * identity is the client id, never the name.
  */
-function cleanName(s, fallback) {
+function cleanName(s, fallback, max = cfg.nameMax) {
   s = String(s == null ? '' : s).normalize('NFC')
     .replace(/\s+/gu, ' ').replace(/[\p{Cc}\p{Cf}\p{Co}\p{Cs}<>]/gu, '').trim();
-  s = [...s].slice(0, cfg.nameMax).join('').trim();
+  s = [...s].slice(0, max).join('').trim();
   return s || fallback;
+}
+
+/** A private-room key as typed: no spaces or control characters, at most roomKeyMax long ('' = none). */
+function cleanKey(s) {
+  s = String(s == null ? '' : s).normalize('NFC').replace(/[\s\p{Cc}\p{Cf}\p{Co}\p{Cs}<>]/gu, '');
+  return [...s].slice(0, cfg.roomKeyMax).join('');
 }
 
 // ---------------------------------------------------------------- rooms
@@ -407,7 +451,10 @@ function createRoom(client, pref) {
   const room = {
     code: newCode(), hostId: client.id, state: 'lobby', players: [],
     game: null, order: null, timer: null, emptySince: 0, botSeq: 0,
-    opts: { crates: false },          // room settings chosen by the host
+    opts: { crates: false, weather: 'random' },   // room settings chosen by the host
+    name: cleanName(pref && pref.roomName, '', cfg.roomNameMax),     // shown in the lounge instead of the code
+    key: cleanKey(pref && pref.key),  // set = private: joining needs it. Never logged, never listed.
+    keyFails: [],                     // when wrong keys were tried (real time), for the guessing limit
   };
   rooms.set(room.code, room);
   addHuman(room, client, pref);
@@ -515,7 +562,7 @@ function fullState(room) {
 function startMsg(room, idx) {
   const g = room.game;
   return {
-    t: 'start', you: idx, cfg: BALANCE, opts: room.opts, tutorial: room.tutorial ? true : undefined,
+    t: 'start', you: idx, cfg: BALANCE, opts: room.opts, weather: room.weather, tutorial: room.tutorial ? true : undefined,
     map: { w: g.w, h: g.h, nodes: g.nodes.map(n => [n.x, n.y]), edges: g.edges },
     players: room.order.map(p => ({ name: p.name, color: p.color, ai: p.bot, bot: p.bot ? p.botIdx : -1, faction: p.faction, sub: p.sub })),
     time: +g.t.toFixed(3), q: room.q, ...fullState(room),
@@ -556,10 +603,14 @@ function matchSeed() {
 function startGame(room, prepared) {
   room.state = 'loading';
   room.order = room.players.slice();
+  const seed = matchSeed();
   room.game = prepared || new Game(
     room.order.map(p => ({ ai: p.bot ? p.ai : null, faction: p.faction, sub: p.sub })),
-    matchSeed(), room.opts,
+    seed, { crates: !!room.opts.crates },
   );
+  // Lessons and showcases keep the rain they were made in; a room on 'random' gets one by the match seed.
+  const sky = room.opts.weather;
+  room.weather = WEATHERS.includes(sky) ? sky : sky === 'random' ? WEATHERS[Math.abs(seed | 0) % WEATHERS.length] : 'rain';
   room.q = 0;
   room.lastCities = room.game.nodes.map(n => cityRec(room.game, n));
   room.sent = new Map();        // army id -> { sig, at } as last told to clients
@@ -606,17 +657,32 @@ function stopLoading(room) {
   room.loadTimer = null;
 }
 
-/** The barrier lifts: the simulation starts from zero now, with no time owed. */
+/**
+ * The barrier lifts: the match is on. A real match first counts down START_COUNTDOWN_SECONDS of
+ * real time, during which the simulation stands still and takes no orders, so every player can
+ * find their base; then it starts from zero with no time owed. Lessons and the art showcase
+ * start at once.
+ */
 function go(room, why) {
   if (room.state !== 'loading') return;
   stopLoading(room);
   room.state = 'playing';
-  room.startedAt = Date.now();
+  const hold = room.tutorial || room.showcase ? 0 : cfg.startCountdownMs;
+  room.holdUntil = Date.now() + hold;
+  room.startedAt = room.holdUntil;
   room.lastTick = room.lastSnap = Date.now();
   room.timer = setInterval(() => tickRoom(room), DT * 1000);
-  log('info', 'match_start', { room: room.code, players: room.order.length, humans: humans(room).length, crates: room.opts.crates, why, late: stillLoading(room).length });
-  broadcast(room, { t: 'go', time: +room.game.t.toFixed(3) });
+  log('info', 'match_start', { room: room.code, players: room.order.length, humans: humans(room).length, crates: room.opts.crates, why, late: stillLoading(room).length, countdown: hold / 1000 });
+  broadcast(room, goMsg(room));
   broadcastRoom(room);
+}
+
+/** Milliseconds of the start countdown still to run (0 once the simulation is going). */
+function holdLeft(room) { return Math.max(0, (room.holdUntil || 0) - Date.now()); }
+
+function goMsg(room) {
+  const left = holdLeft(room);
+  return { t: 'go', time: +room.game.t.toFixed(3), countdown: left || undefined };
 }
 
 function broadcastState(room, force) {
@@ -731,6 +797,7 @@ function tutStep(room) {
 function tickRoom(room) {
   const g = room.game;
   const now = Date.now();
+  if (now < room.holdUntil) { room.lastTick = now; return; }      // the start countdown: no time passes, none is owed
   const steps = room.pace.advance((now - room.lastTick) / 1000, room.paused);
   room.lastTick = now;
   for (let i = 0; i < steps; i++) g.tick(DT);
@@ -769,7 +836,7 @@ setInterval(() => {
     if (room.state !== 'lobby') continue;
     refreshIdle(room, now);
     const sig = room.players.map(p => (isIdle(p) ? 1 : 0)).join('');
-    if (sig !== (room.idleSig || sig.replace(/1/g, '0'))) broadcast(room, roomMsg(room));
+    if (sig !== (room.idleSig || sig.replace(/1/g, '0'))) sendRoom(room);
     room.idleSig = sig;
   }
   for (const [code, at] of closedCodes) if (now - at > CLOSED_KEEP_MS) closedCodes.delete(code);
@@ -873,7 +940,7 @@ const handlers = {
     if (!p || p.loaded) return;
     p.loaded = true;
     if (room.state === 'loading') checkLoaded(room);
-    else send(c.ws, { t: 'go', time: +room.game.t.toFixed(3) });   // joined a match already under way
+    else send(c.ws, goMsg(room));   // joined a match already under way (or still counting down)
   },
 
   create(c, m) {
@@ -896,7 +963,44 @@ const handlers = {
     if (!room || room.tutorial) return send(c.ws, { t: 'err', code: !room && closedCodes.has(code) ? 'room_closed' : 'room_not_found' });
     if (room.state !== 'lobby') return send(c.ws, { t: 'err', code: 'match_started' });
     if (room.players.length >= MAX_PLAYERS) return send(c.ws, { t: 'err', code: 'room_full' });
+    if (room.key) {
+      // A private room. Asking without a key costs nothing more than the join attempt; wrong keys
+      // are counted for the room as a whole, so opening more connections does not buy more guesses.
+      room.keyFails = room.keyFails.filter(at => now - at < cfg.keyWindowMs);
+      if (m.key == null || m.key === '') return send(c.ws, { t: 'err', code: 'key_required', room: room.code, name: room.name || '' });
+      if (room.keyFails.length >= cfg.keyAttempts) {
+        return send(c.ws, { t: 'err', code: 'slow', retry: Math.ceil((cfg.keyWindowMs - (now - room.keyFails[0])) / 1000) });
+      }
+      if (typeof m.key !== 'string' || m.key.length > 64 || !keyMatches(room, cleanKey(m.key))) {
+        room.keyFails.push(now);
+        log('warn', 'room_key_wrong', { room: room.code, fails: room.keyFails.length });
+        return send(c.ws, { t: 'err', code: 'key_wrong', room: room.code, name: room.name || '' });
+      }
+    }
     addHuman(room, c, m);
+    broadcastRoom(room);
+  },
+
+  // The host names the room; the lounge shows the name instead of the invite code.
+  roomName(c, m) {
+    const room = hostRoom(c, 'lobby');
+    if (!room || room.tutorial) return;
+    const name = cleanName(m.name, '', cfg.roomNameMax);
+    if (name === room.name) return;
+    room.name = name;
+    broadcastRoom(room);
+  },
+
+  // The host makes the room private (a key is needed to join) or public again ({ key: '' }).
+  // Whoever is already in stays in.
+  roomKey(c, m) {
+    const room = hostRoom(c, 'lobby');
+    if (!room || room.tutorial) return;
+    const key = cleanKey(m.key);
+    if (key === room.key) return;
+    room.key = key;
+    room.keyFails = [];
+    log('info', 'room_privacy', { room: room.code, private: !!key });
     broadcastRoom(room);
   },
 
@@ -1022,6 +1126,12 @@ const handlers = {
   opt(c, m) {
     const room = hostRoom(c, 'lobby');
     if (!room) return;
+    if (typeof m.weather === 'string') {
+      // The sky is looks only: nobody's readiness depends on it.
+      if ((m.weather !== 'random' && !WEATHERS.includes(m.weather)) || room.opts.weather === m.weather) return;
+      room.opts.weather = m.weather;
+      return broadcastRoom(room);
+    }
     if (typeof m.crates !== 'boolean' || room.opts.crates === m.crates) return;
     room.opts.crates = m.crates;
     unready(room);                               // the rules changed: everybody confirms again
@@ -1148,6 +1258,51 @@ const handlers = {
     pump(c.room, true, true);
   },
 
+  // Development aid for comparing art: a frozen diorama in the real match pipeline. One base of
+  // each level for the Iron Pact, a level-3 base for the other two factions, a neutral base, and
+  // a mixed column of each faction standing on a road. Nothing produces, moves or fights.
+  // Refused in production and anywhere DEV_TOOLS=1 is not set.
+  showcase(c, m) {
+    if (PROD || process.env.DEV_TOOLS !== '1' || c.room) return;
+    // Scene 1: Iron at levels 1-3, the other two factions at level 3, the first roster of each.
+    // Scene 2: every faction at levels 1-3 and neutral bases at levels 1-3, the second roster of each.
+    const two = m && m.scene === 2;
+    const subs = two ? ['volt', 'shade', 'forge'] : ['bastion', 'aegis', 'dominion'];
+    const room = {
+      code: newCode(), hostId: c.id, state: 'lobby', players: [],
+      game: null, order: null, timer: null, emptySince: 0, botSeq: 3, opts: { crates: false }, showcase: true,
+    };
+    rooms.set(room.code, room);
+    room.players.push({ id: c.id, name: c.name, color: 0, bot: false, ai: null, client: c, connected: true, faction: 'iron', sub: subs[0], ready: true, waitSince: 0, loaded: false });
+    room.players.push({ id: 'bot1', name: AI_NAMES[0], color: 1, faction: 'meridian', sub: subs[1], bot: true, botIdx: 0, ai: 'easy', client: null, connected: true });
+    room.players.push({ id: 'bot2', name: AI_NAMES[1], color: 4, faction: 'veil', sub: subs[2], bot: true, botIdx: 1, ai: 'easy', client: null, connected: true });
+    c.room = room;
+    //                 x    y   owner level soldiers
+    const map = two ? {
+      w: 1100, h: 760,
+      nodes: [[170, 130, 0, 1, 20], [450, 130, 0, 2, 40], [730, 130, 0, 3, 70],
+        [170, 330, 1, 1, 20], [450, 330, 1, 2, 40], [730, 330, 1, 3, 70],
+        [170, 530, 2, 1, 20], [450, 530, 2, 2, 40], [730, 530, 2, 3, 70],
+        [990, 130, -1, 1, 8], [990, 330, -1, 2, 12], [990, 530, -1, 3, 20]],
+      edges: [[0, 1], [1, 2], [3, 4], [4, 5], [6, 7], [7, 8], [2, 9], [5, 10], [8, 11], [0, 3], [3, 6]],
+    } : {
+      w: 1100, h: 680,
+      nodes: [[170, 150, 0, 1, 20], [450, 150, 0, 2, 40], [730, 150, 0, 3, 70], [960, 360, 1, 3, 70],
+        [450, 540, 2, 3, 70], [170, 430, -1, 1, 8], [740, 540, -1, 2, 12]],
+      edges: [[0, 1], [1, 2], [2, 3], [1, 4], [0, 5], [5, 4], [4, 6], [6, 3]],
+    };
+    const g = new Game(room.players.map(p => ({ ai: null, faction: p.faction, sub: p.sub })), 1, { crates: false, map });
+    g.produce = () => {};
+    const column = (pi, from, to, s) => {
+      const p = g.players[pi];
+      const a = g.newArmy(pi, from, to, [makeGroup(p.faction, p.sub, 1, 34), makeGroup(p.faction, p.sub, 2, 22), makeGroup(p.faction, p.sub, 3, 12)], s);
+      a.hold = true;
+    };
+    if (two) { column(0, 0, 1, 170); column(1, 3, 4, 170); column(2, 6, 7, 170); }
+    else { column(0, 0, 1, 170); column(1, 3, 6, 150); column(2, 4, 5, 170); }
+    startGame(room, g);
+  },
+
   // The client missed an update or its checksum did not match: the next update is a keyframe.
   resync(c) {
     const room = c.room;
@@ -1175,6 +1330,7 @@ function hostRoom(c, state) {
 function seat(c) {
   const room = c.room;
   if (!room || room.state !== 'playing' || !room.game) return null;
+  if (holdLeft(room)) return null;                // the start countdown: nobody gives orders yet
   const idx = room.order.findIndex(p => p.client === c);
   return idx < 0 ? null : { game: room.game, idx };
 }

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { ME, FOE, PTS, ROADS, scene, own, board } from './scene.mjs';
 import { planRoute } from '../public/js/route.js';
-import { figuresFor, FIGURES } from '../public/js/art.js';
+import { figuresFor, FIGURES, TIER_SCALE } from '../public/js/art.js';
 
 const require = createRequire(import.meta.url);
 const { BALANCE: B } = require('../game/config');
@@ -58,27 +58,72 @@ function preview(g, pi, from, to, n = 0) {
   console.log(`route preview ok (${pairs} routes agree with the server; ${warped} use the wormhole)`);
 }
 
-// ---- representative figures: bounded, faithful to the mix, and a pure function of the counts
+// ---- representative figures: one per batch of a kind, bounded, and a pure function of the counts
 {
   let cases = 0;
-  for (const n of [1, 2, 5, 12, 13, 40, 99, 250, 1000, 5000]) {
+  for (const n of [1, 2, 5, 10, 11, 40, 99, 250, 1000, 5000]) {
     for (const mix of [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0.5, 0.5, 0], [0.7, 0.2, 0.1], [0.98, 0.01, 0.01]]) {
       const t1 = Math.round(n * mix[0]), t2 = Math.round(n * mix[1]), t3 = Math.max(0, n - t1 - t2);
       const tiers = [t1, t2, t3], total = t1 + t2 + t3, before = JSON.stringify(tiers);
       const f = figuresFor(total, tiers);
       assert(f.total <= FIGURES.cap, `${total} soldiers drawn as ${f.total} figures`);
       assert.strictEqual(f.total, f.each[0] + f.each[1] + f.each[2]);
-      [t1, t2, t3].forEach((k, i) => { assert(f.each[i] <= k, 'more figures than soldiers'); if (k > 0) assert(f.each[i] >= 1, 'a troop type present in the army is not shown'); });
-      if (total <= FIGURES.exact) assert.strictEqual(f.total, total, 'a small army is drawn one for one');
+      assert(f.batch >= FIGURES.batch && Number.isInteger(Math.log2(f.batch / FIGURES.batch)), `batch of ${f.batch}`);
+      [t1, t2, t3].forEach((k, i) => {
+        assert.strictEqual(f.each[i], Math.ceil(k / f.batch), 'one figure per started batch of each kind');
+        if (k > 0) assert(f.each[i] >= 1, 'a troop type present in the army is not shown');
+      });
+      if (total <= FIGURES.batch && total === Math.max(t1, t2, t3)) assert.strictEqual(f.total, 1, 'a single small batch is one figure');
       assert.strictEqual(JSON.stringify(tiers), before, 'the counts were modified');
       assert.deepStrictEqual(figuresFor(total, tiers), f, 'not deterministic');
       cases++;
     }
   }
-  // Different ratios change only the drawing.
-  const few = figuresFor(600, [400, 150, 50], { exact: 4, group: 20, cap: 6 }), many = figuresFor(600, [400, 150, 50], { exact: 30, group: 2, cap: 60 });
-  assert(few.total < many.total && few.total <= 6 && many.total <= 60);
-  console.log(`representative figures ok (${cases} armies; at most ${FIGURES.cap} figures each)`);
+  assert.deepStrictEqual(figuresFor(46, [34, 12, 0]).each, [4, 2, 0]);
+  assert.strictEqual(figuresFor(46, [34, 12, 0]).batch, 10);
+  assert.deepStrictEqual(figuresFor(0, [0, 0, 0]).each, [0, 0, 0]);
+  // Different batches and caps change only the drawing.
+  const few = figuresFor(600, [400, 150, 50], { batch: 20, cap: 6 }), many = figuresFor(600, [400, 150, 50], { batch: 5, cap: 200 });
+  assert(few.total < many.total && few.total <= 6 && many.total === 120);
+  assert(TIER_SCALE[1] < TIER_SCALE[2] && TIER_SCALE[2] < TIER_SCALE[3], 'heavier tiers are drawn larger');
+  console.log(`representative figures ok (${cases} armies; one figure per ${FIGURES.batch}, at most ${FIGURES.cap} each)`);
+}
+
+// ---- city scenery: a mix of plots, the same for the same seed, never over a base or a road
+{
+  const { planScenery } = await import('../public/js/scenery.js');
+  const { PROP_KINDS, propModel } = await import('../public/js/props.js');
+  const nodes = [[170, 150], [450, 150], [730, 150], [960, 360], [450, 540], [170, 430], [740, 540]].map(([x, y]) => ({ x, y }));
+  const roads = [[0, 1], [1, 2], [2, 3], [1, 4], [0, 5], [5, 4], [4, 6], [6, 3]], R = 22;
+  const plan = seed => planScenery({ nodes, roads, R, x0: -200, y0: -150, x1: 1300, y1: 800, seed, skyline: true });
+  const a = plan(4242), strip = p => JSON.stringify(p, (k, v) => (typeof v === 'function' ? undefined : v));
+  assert.strictEqual(strip(plan(4242)), strip(a), 'the same seed planned a different city');
+  assert.notStrictEqual(strip(plan(7)), strip(a), 'every seed plans the same city');
+  const towers = a.towers.filter(t => !t.prop).length, kinds = new Set(a.props.map(p => p.kind));
+  assert(a.props.length >= 20 && kinds.size >= 7, `only ${a.props.length} plots of ${kinds.size} kinds besides towers`);
+  assert(towers >= 8 && towers < a.towers.length * 0.6, `${towers} towers of ${a.towers.length} plots`);
+  assert(new Set(a.props.map(p => p.key)).size <= 32, 'too many different models to instance');
+  for (const p of a.props) {
+    assert(PROP_KINDS[p.kind] && typeof p.build === 'function' && p.scale > 0 && Number.isFinite(p.x + p.y + p.yaw));
+    // The plot's footprint (a square turned 45 degrees: a diamond on screen) holds no base and no road.
+    for (const n of nodes) assert(Math.abs(n.x - p.x) / p.r + Math.abs(n.y - p.y) / (p.r * 0.55) > 1, `${p.kind} stands on a base`);
+    for (const [i, j] of roads) for (let s = 0; s <= 20; s++) {
+      const x = nodes[i].x + (nodes[j].x - nodes[i].x) * s / 20, y = nodes[i].y + (nodes[j].y - nodes[i].y) * s / 20;
+      assert(Math.abs(x - p.x) / p.r + Math.abs(y - p.y) / (p.r * 0.55) > 1, `${p.kind} stands on a road`);
+    }
+  }
+  let faces = 0, most = 0;
+  for (const kind of Object.keys(PROP_KINDS)) for (let v = 0; v < PROP_KINDS[kind].variants; v++) {
+    const m = propModel(kind, v);
+    let n = 0, top = 0, out = 0;
+    for (const s of m.solids) for (const f of s.faces) { n++; for (const q of f.p) { top = Math.max(top, q[2]); out = Math.max(out, Math.abs(q[0]), Math.abs(q[1])); } }
+    assert(n > 10 && n <= 400, `${kind} ${v} has ${n} faces`);
+    assert(out <= PROP_KINDS[kind].a / 2 + 0.01, `${kind} ${v} reaches ${out} from the middle of a plot ${PROP_KINDS[kind].a} wide`);
+    assert(top <= (PROP_KINDS[kind].hv ? PROP_KINDS[kind].hv[v] : PROP_KINDS[kind].h) + 0.01, `${kind} ${v} is ${top} tall, taller than the plan allows for`);
+    assert.strictEqual(propModel(kind, v), m, 'a plot model is built once');
+    faces += n; most = Math.max(most, n);
+  }
+  console.log(`city scenery ok (${a.props.length} plots of ${kinds.size} kinds and ${towers} towers; ${Object.keys(PROP_KINDS).length} kinds, ${faces} faces in all, ${most} at most)`);
 }
 
 // ---- combat does not know how armies are drawn
@@ -99,8 +144,8 @@ function preview(g, pi, from, to, n = 0) {
     return JSON.stringify({ t: g.t, report: g.report(), nodes: g.nodes.map(c => [c.owner, c.level, c.groups]), armies: g.armies.map(a => [a.owner, a.s, a.groups]) });
   };
   const base = play(null);
-  assert.strictEqual(play({ exact: 1, group: 50, cap: 3 }), base, 'a coarse drawing ratio changed the match');
-  assert.strictEqual(play({ exact: 40, group: 1, cap: 200 }), base, 'a fine drawing ratio changed the match');
+  assert.strictEqual(play({ batch: 50, cap: 3 }), base, 'a coarse drawing ratio changed the match');
+  assert.strictEqual(play({ batch: 1, cap: 200 }), base, 'a fine drawing ratio changed the match');
   // Health is tracked per troop type, never as one pool for the army: wounding one type leaves the others whole.
   const groups = [makeGroup('iron', 'bastion', 1, 30), makeGroup('iron', 'bastion', 3, 10)];
   const full3 = groups[1].hp;

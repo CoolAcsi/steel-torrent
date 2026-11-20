@@ -393,7 +393,7 @@ section('mind-control units convert a few soldiers at a time, once each, and air
 section('basic skills are cast on bases and roads, with cooldowns and limits; a refused cast costs nothing', () => {
   for (const [f, list] of Object.entries({ iron: ['turret', 'barricade', 'nuke'], meridian: ['aegis', 'suppress', 'wormhole'], veil: ['guard', 'mire', 'dominate'] })) {
     assert.deepStrictEqual(B.skills[f].map(s => s.id), list);
-    assert.deepStrictEqual(B.skills[f].map(s => s.target), { iron: ['ownCity', 'edge', 'enemyCity'], meridian: ['ownCity', 'ownCity', 'ownCityPair'], veil: ['ownCity', 'edge', 'enemyCity'] }[f]);
+    assert.deepStrictEqual(B.skills[f].map(s => s.target), { iron: ['ownCity', 'edge', 'enemyCity'], meridian: ['ownCity', 'ownCity', 'cityPair'], veil: ['ownCity', 'edge', 'enemyCity'] }[f]);
     assert(B.skills[f][2].super && !B.skills[f][0].super && !B.skills[f][1].super);
   }
   const g = board([0, 1, 2]);
@@ -768,7 +768,7 @@ section('chrono wormhole: a temporary two-way link between two of your bases tha
   };
   const def = B.skills.meridian[2];
   let g = setup();
-  assert.deepStrictEqual(g.skill(ME, 2, { node: 0, to: 9 }), { ok: false, why: 'target' }, 'both ends must be yours');
+  assert.deepStrictEqual(g.skill(ME, 2, { node: 0, to: 99 }), { ok: false, why: 'target' }, 'both ends must be bases');
   assert.deepStrictEqual(g.skill(ME, 2, { node: 0, to: 0 }), { ok: false, why: 'target' });
   assert.deepStrictEqual(g.route(ME, 0, 4).path, [0, 1, 2, 3, 4]);
   assert(g.skill(ME, 2, { node: 0, to: 4 }).ok);
@@ -826,7 +826,8 @@ section('chrono wormhole: a temporary two-way link between two of your bases tha
   assert(run(g, 60, () => g.armies.length === 0), 'everyone should have arrived by road');
   assert.strictEqual(mineOnly(g), soldiersBefore);
 
-  // It also closes at once if either end is lost, and a new one replaces the old.
+  // A new one replaces the old. It may join any two bases; losing an end does not close it, it
+  // only stops being usable from that end.
   g = setup();
   assert(g.skill(ME, 2, { node: 0, to: 4 }).ok);
   g.players[ME].charge = g.players[ME].need;
@@ -834,7 +835,29 @@ section('chrono wormhole: a temporary two-way link between two of your bases tha
   assert(g.worms.length === 1 && g.worms[0].a === 1 && g.worms[0].b === 3, 'one wormhole per player');
   g.nodes[3].owner = FOE; g.ownerRev++;
   tick(g, 0.1);
-  assert.strictEqual(g.worms.length, 0);
+  assert.strictEqual(g.worms.length, 1, 'still open');
+  assert.deepStrictEqual(g.route(ME, 1, 3).path, [1, 3], 'and now it leads straight to the enemy');
+  assert.strictEqual(g.route(FOE, 3, 1), null, 'whoever holds the far end cannot come back through it');
+
+  // Into an enemy base: the column crosses at once and arrives as an attacker, outside the walls.
+  g = setup();
+  own(g, 9, FOE, 6);
+  assert(g.skill(ME, 2, { node: 0, to: 9 }).ok, 'the far end may be anybody\'s');
+  assert.deepStrictEqual(g.route(ME, 0, 9).path, [0, 9]);
+  assert.strictEqual(g.route(FOE, 9, 0), null);
+  g.nodes[0].groups = [makeGroup('meridian', 'shade', 1, 40)];
+  const strike = g.send(ME, [0], 9, 1, 7)[0];
+  assert(strike.warped && strike.to === 9 && strike.n === 40, 'nobody is lost crossing');
+  tick(g, 0.2);
+  assert.strictEqual(strike.state, 'siege', 'it fights for the base like any other attacker');
+  assert(run(g, 30, () => g.nodes[9].owner === ME), 'the assault through the wormhole takes the base');
+  // Between two bases that are not mine it opens, but gives me nothing until I hold an end.
+  g = setup();
+  own(g, 7, FOE, 5);
+  assert(g.skill(ME, 2, { node: 9, to: 7 }).ok);
+  assert.deepStrictEqual(g.route(ME, 4, 7).path, [4, 3, 7], 'not through it: I hold neither end, so the column goes by road');
+  own(g, 9, ME, 10);
+  assert.deepStrictEqual(g.route(ME, 4, 7).path, [4, 9, 7], 'usable once I hold one end');
 });
 
 section('base mind control: the base changes sides as it stands; marching armies do not', () => {

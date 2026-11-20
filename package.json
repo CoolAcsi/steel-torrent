@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "start:prod": "NODE_ENV=production node --env-file-if-exists=.env server.js",
-    "test": "node test/sim.test.js && node test/rules.test.mjs && node test/client.test.mjs && node test/route.test.mjs && node test/auto.test.mjs && node test/clock.test.mjs && node test/i18n.test.mjs && node test/vendor.test.mjs && node test/net.test.mjs && node test/tutorial.test.mjs",
+    "test": "node test/sim.test.js && node test/rules.test.mjs && node test/client.test.mjs && node test/route.test.mjs && node test/auto.test.mjs && node test/clock.test.mjs && node test/i18n.test.mjs && node test/vendor.test.mjs && node test/net.test.mjs && node test/lounge.test.mjs && node test/tutorial.test.mjs",
     "poc": "node poc/serve.js",
     "vendor": "node scripts/vendor-three.mjs"
   },

@@ -57,7 +57,7 @@ function busy(seed = 21) {
         // The AI may have one standing already; that serves just as well.
         if (def.target === 'ownCity') ok = mine.some(c => g.skill(pi, slot, { node: c.id }).ok) || g.emps.some(e => e.owner === pi && e.kind === def.emp);
         else if (def.target === 'enemyCity') ok = g.skill(pi, slot, { node: prey.id }).ok;
-        else if (def.target === 'ownCityPair') ok = g.skill(pi, slot, { node: mine[0].id, to: mine[1].id }).ok;
+        else if (def.target === 'cityPair') ok = g.skill(pi, slot, { node: mine[0].id, to: mine[1].id }).ok;
         else {
           for (const c of mine) for (const v of g.adj[c.id]) for (const f of [0.5, 0.3, 0.7]) ok = ok || g.skill(pi, slot, { a: c.id, b: v, f }).ok;
           ok = ok || g.obst.some(o => o.owner === pi);

@@ -21,6 +21,28 @@ export default {
     defaultName: '指挥官 {n}',
   },
 
+  lounge: {
+    title: '等待中的房间',
+    count: '{n} 个房间',
+    countMore: '显示 {n} / {total}',
+    empty: '暂时没有等待玩家的房间。创建一个，它就会出现在这里。',
+    host: '房主：{host}',
+    private: '私密',
+    full: '已满',
+    roomCode: '房间 {code}',
+    keyPrompt: '这是私密房间，请向房主索取房间密钥。',
+    keyField: '房间密钥',
+    cancel: '取消',
+  },
+
+  weather: {
+    random: '随机',
+    rain: '雨天',
+    snow: '雪天',
+    sun: '晴天',
+    night: '夜晚',
+  },
+
   how: {
     title: '玩法说明',
     send: {
@@ -55,6 +77,17 @@ export default {
 
   room: {
     label: '房间',
+    nameLabel: '房间名称（房主可修改）',
+    codeLabel: '邀请码',
+    weather: '天气',
+    private: '私密',
+    privateOpt: '私密房间',
+    privateHint: '会带锁显示在大厅列表中，加入时需要输入你在这里设置的密钥。',
+    keyLabel: '房间密钥',
+    keyPlaceholder: '设置密钥',
+    keySet: '设置密钥',
+    keySaved: '房间已设为私密。请把密钥告诉你邀请的玩家。',
+    keyEmpty: '请先输入密钥。',
     leave: '离开',
     inviteTitle: '邀请同一网络的玩家，让他们打开这个地址',
     copy: '复制',
@@ -278,6 +311,12 @@ export default {
 
   game: {
     youCommand: '你的阵营：{color}',
+    countdown: {
+      title: '战斗即将开始',
+      base: '你的基地 · {color}',
+      watch: '你正在观战',
+      go: '开战！',
+    },
     upgradeTo: '升级为{name} · {cost}',
     maxLevel: '{name} · 已满级',
     eliminated: '{name} 已被淘汰',
@@ -404,7 +443,7 @@ export default {
     nuke: { name: '核弹打击', desc: '预警 {delay} 秒后摧毁一座敌方基地：守军全灭，基地变成中立废墟，需重新占领并重建。{radius} 范围内的敌军也会受伤。基地护盾可以挡下；不能以玩家的最后一座基地为目标。', target: '点击一座敌方基地。', badge: '摧毁这座基地' },
     aegis: { name: '基地护盾', desc: '为己方一座基地罩上护盾，持续 {dur} 秒。它先吸收 {hp} 点伤害，守军才会受伤；还能挡下一次针对该基地的超级武器，挡下后护盾消失。', target: '点击己方一座基地。' },
     suppress: { name: '压制炮台', desc: '在己方一座基地旁架设压制塔，持续 {dur} 秒。{range} 范围内的敌军行军速度降低 {slow}%。', target: '点击己方一座基地。' },
-    wormhole: { name: '超时空虫洞', desc: '连接己方两座基地，持续 {dur} 秒。部队可瞬间双向通过，路线会自动利用它。总共可通过 {capacity} 人；任一端基地失守即关闭。', target: '先点击己方一座基地，再点击另一座。' },
+    wormhole: { name: '超时空虫洞', desc: '连接任意两座基地，持续 {dur} 秒，不论归属。你的部队可从己方占据的一端瞬间通过，路线会自动利用它：通往己方基地是增援，通往其他基地则是进攻。总共可通过 {capacity} 人。', target: '先点击任意一座基地，再点击另一座。' },
     guard: { name: '心灵守卫', desc: '在己方一座基地旁架设心灵塔，持续 {dur} 秒。{range} 范围内的敌军伤害降低 {weaken}%。', target: '点击己方一座基地。' },
     mire: { name: '干扰屏障', desc: '覆盖与己方基地相连的一段道路，持续 {dur} 秒。其中的敌军行军速度降低 {slow}%，伤害降低 {weaken}%。它无法被打掉，只能等它消失或绕开。', target: '点击与己方基地相连的道路。' },
     dominate: { name: '基地心灵控制', desc: '预警 {delay} 秒后，一座敌方基地连同全部守军归你所有。行军中的部队不受影响。基地护盾可以挡下；不能以玩家的最后一座基地为目标。', target: '点击一座敌方基地。', badge: '夺取这座基地' },
@@ -507,6 +546,8 @@ export default {
     match_started: '这场对战已经开始了。',
     room_full: '房间已满。',
     room_closed: '该房间已关闭。',
+    key_required: '这是私密房间，请输入密钥。',
+    key_wrong: '密钥不正确，请向房主确认后重试。',
     slow: '尝试次数过多，请在 {s} 秒后重试。',
     notReady: '还有玩家没有准备。',
     need_opponent: '请先添加至少一个对手。',
@@ -633,7 +674,7 @@ export default {
       title: '持续路线与取消',
       on: '按“自动”（R 键），然后从 A 拖到 B。此后 A 会自行持续向 B 出兵。',
       off: '现在把它停掉：把指针移到路线上并点击 ×，或点选 A 后按 Delete。已经上路的部队会继续行军。',
-      halt: '行军命令也可以取消。用普通方式从 A 向 B 派兵，再把指针移到这支部队的路线上并点击 ×：部队会停在原地待命。',
+      halt: '行军命令也可以取消。“自动”已经关闭（按钮显示“单次”）：从 A 拖到 B 派出一支部队，再把指针移到这支部队上（触屏设备请点一下部队）并点击它的 ×。部队会停在原地待命。',
       redirect: '待命的部队保留全部兵力，仍然可能遭到攻击。先点击这支部队，再点击一座基地，让它去那里。',
       done: '取消命令不会让部队消失或瞬移：持续路线只是不再出兵，被叫停的部队原地等待新命令。',
     },

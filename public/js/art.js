@@ -2,6 +2,7 @@
 // into cached sprites: 32 facings for vehicle hulls and turrets, 8 facings x 4
 // walk frames for infantry, one sprite per base (faction, subfaction, level,
 // team colour).
+import { pick } from './modelset.js';
 import { Model, renderModel, F } from './iso.js';
 import { buildHull, buildTurret, drawSoldier, unitSpec } from './units.js';
 import { buildBase, buildCompound, BS, BASE_LIFT } from './buildings.js';
@@ -29,7 +30,7 @@ export const STEP = TAU / DIRS;
 const YAW_B = Math.PI / 4;                 // buildings sit corner-on to the camera
 
 const VBOX = [70, 62, 35, 41];             // vehicle sprite box [w, h, anchorX, anchorY]
-const SBOX = [32, 36, 16, 27];             // infantry
+const SBOX = [40, 46, 20, 35];             // infantry
 const BBOX = [150, 138, 75, 98];           // base, with its compound
 
 const models = new Map();
@@ -74,7 +75,11 @@ export function soldierSprite(cache, f, sub, tc, dir8, frame) {
       g.fillStyle = 'rgba(0,0,0,.38)';
       g.beginPath(); g.ellipse(2.2, 1, 5.4, 2.6, 0, 0, TAU); g.fill();
     },
-    draw(g) { drawSoldier(g, f, sub, tc, dir8, frame); },
+    draw(g) {
+      // A model set's infantry are 3D figures: bake those, so both renderers show the same soldier.
+      const alt = pick('soldier', f, sub, tc, frame & 3, 1);
+      if (alt) renderModel(g, alt, dir8 * (TAU / 8)); else drawSoldier(g, f, sub, tc, dir8, frame);
+    },
     outline: true,
   });
 }
@@ -85,7 +90,7 @@ export function soldierSprite(cache, f, sub, tc, dir8, frame) {
  * With `ruin` it is the breached, burnt yard of a destroyed base (draw ruinModel() in it).
  */
 export function compoundModel(f, level, tc, gates, ruin = false) {
-  return buildCompound(f, level, tc, gates, ruin);
+  return pick('compound', f, level, tc, gates, ruin) || buildCompound(f, level, tc, gates, ruin);
 }
 
 /** Model, live details and height of a base. f = 'neutral' for unowned bases. */
@@ -94,7 +99,9 @@ export function baseInfo(f, sub, level, tc) {
 }
 
 export function baseSprite(cache, f, sub, level, tc) {
-  return cache.get(`b|${f}|${sub}|${level}|${tc.id}`, BBOX, {
+  // A tall base (a model set's landmark tower) needs more room above the anchor than the usual box.
+  const up = Math.max(BBOX[3], Math.ceil(buildBase(f, sub, level, tc).top) + BASE_LIFT + 14);
+  return cache.get(`b|${f}|${sub}|${level}|${tc.id}`, [BBOX[0], up + (BBOX[1] - BBOX[3]), BBOX[2], up], {
     shadow(g) {
       g.fillStyle = 'rgba(0,0,0,.34)';
       g.beginPath(); g.ellipse(9, 6, 46, 26, 0, 0, TAU); g.fill();
@@ -156,50 +163,39 @@ export function scaffoldSprite(cache, progress, level) {
  * group: beyond that, one more figure per this many further soldiers
  * cap:   never more figures than this for one army
  */
-export const FIGURES = Object.freeze({ exact: 12, group: 5, cap: 18 });
+export const FIGURES = Object.freeze({ batch: 10, cap: 18 });
+/** How much larger a figure of each tier is drawn (index = tier). Drawing only: see figuresFor. */
+export const TIER_SCALE = Object.freeze([0, 1.15, 1.45, 1.8]);
 
 /**
+ * One figure stands for a batch of soldiers of the same kind: 10 by default, so 34 riflemen
+ * and 12 tanks march as four soldiers and two tanks. A kind present in the army always has at
+ * least one figure. An army too large for the quality preset's cap is drawn in wider batches
+ * (20, 40, 80...) until it fits. The plate above the column carries the true numbers.
  * @param n      soldiers in the army (used when `tiers` is missing or sums to nothing)
  * @param tiers  [tier 1, tier 2, tier 3] soldier counts
- * @param opts   { exact, group, cap } - defaults to FIGURES; missing fields fall back to it
- * @returns { total, each: [f1, f2, f3], perFigure }  figures in all, per tier, and soldiers per figure
+ * @param opts   { batch, cap } - defaults to FIGURES; missing fields fall back to it
+ * @returns { total, each: [f1, f2, f3], perFigure, batch }  figures in all and per tier,
+ *          soldiers per figure on average, and the batch size that was used
  */
 export function figuresFor(n, tiers, opts) {
   const o = opts || FIGURES;
-  const exact = Math.max(1, Math.floor(o.exact ?? FIGURES.exact));
-  const group = Math.max(1, o.group ?? FIGURES.group);
+  let batch = Math.max(1, Math.floor(o.batch ?? FIGURES.batch));
   const cap = Math.max(1, Math.floor(o.cap ?? FIGURES.cap));
   const c = [0, 1, 2].map(i => Math.max(0, Math.floor((tiers && tiers[i]) || 0)));
   let N = c[0] + c[1] + c[2];
   if (!N) { N = Math.max(0, Math.floor(n || 0)); c[0] = N; }       // no breakdown given: all infantry
-  if (!N) return { total: 0, each: [0, 0, 0], perFigure: 0 };
+  if (!N) return { total: 0, each: [0, 0, 0], perFigure: 0, batch };
 
-  const total = Math.min(cap, N, N <= exact ? N : exact + Math.ceil((N - exact) / group));
-
-  // Share the figures out in proportion (largest remainder), so a mixed army stays mixed:
-  // every tier present keeps at least one figure while there are figures to go round.
-  const present = c.filter(x => x > 0).length;
-  const each = [0, 0, 0], rem = [0, 0, 0];
-  let given = 0;
-  for (let i = 0; i < 3; i++) {
-    const q = (c[i] * total) / N;
-    each[i] = Math.floor(q);
-    if (c[i] > 0 && each[i] === 0 && total >= present) each[i] = 1;
-    rem[i] = q - Math.floor(q);
-    given += each[i];
+  const each = [0, 0, 0];
+  let total = 0;
+  for (let guard = 0; guard < 40; guard++) {
+    total = 0;
+    for (let i = 0; i < 3; i++) total += (each[i] = Math.ceil(c[i] / batch));
+    if (total <= cap) break;
+    batch *= 2;
   }
-  // Hand out what is left by remainder (heavier tier first on a tie: it is the rarer sight)...
-  while (given < total) {
-    let best = -1;
-    for (let i = 2; i >= 0; i--) if (each[i] < c[i] && (best < 0 || rem[i] > rem[best])) best = i;
-    if (best < 0) break;
-    each[best]++; rem[best] = -1; given++;
-  }
-  // ...or take back what the "at least one" rule over-gave, from whoever has most.
-  while (given > total) {
-    let most = 0;
-    for (let i = 1; i < 3; i++) if (each[i] > each[most]) most = i;
-    each[most]--; given--;
-  }
-  return { total: given, each, perFigure: N / given };
+  // A cap smaller than the number of kinds present: the heaviest kinds keep their figure.
+  for (let i = 0; total > cap && i < 3; i++) if (each[i]) { total -= each[i]; each[i] = 0; }
+  return { total, each, perFigure: total ? N / total : 0, batch };
 }

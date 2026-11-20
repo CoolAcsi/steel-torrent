@@ -9,7 +9,7 @@ import {
   COLORS, NEUTRAL, DIRS, STEP,
   soldierSprite, hullSprite, turretSprite, baseSprite, baseInfo, unitSpec, compoundModel,
   ruinSprite, scaffoldSprite, ruinModel, scaffoldModel, shieldDomeModel, emplacementModel, obstacleModel, portalModel, portalPose,
-  figuresFor, FIGURES, hullPose, turnToward, idleTurret, walkFrame, buildPose, domePose, progressAt, clamp01,
+  figuresFor, FIGURES, TIER_SCALE, hullPose, turnToward, idleTurret, walkFrame, buildPose, domePose, progressAt, clamp01,
 } from './art.js';
 import { drawBaseLive, insigniaURL, BS, BASE_LIFT } from './buildings.js';
 import { soldierMuzzle, buildHull, buildTurret, buildSoldier } from './units.js';
@@ -19,6 +19,7 @@ import { drawEffect, drawCrate, SKILL_COLOR, GLOWS } from './fx.js';
 import { drawSuper, drawChronoLink, SUPER_TYPES, GROUND_TYPES } from './superfx.js';
 import { SpriteCache, drawSprite, F } from './iso.js';
 import { buildTerrain } from './terrain.js';
+import { drawWeather, weatherOf } from './weather.js';
 import { planScenery, lampModel } from './scenery.js';
 import { makeState, applyFull, applyUpdate } from './netstate.js';
 import { planRoute, planBalancedDispatch } from './route.js';
@@ -27,11 +28,21 @@ import { sfx } from './sfx.js';
 import { t, fmt, getLang } from './i18n.js';
 
 const TAU = Math.PI * 2;
-const US = 0.64;                  // units are drawn at this scale, so a tank is small beside a building and fits its lane
+let US = 0.64;                    // units are drawn at this scale, so a tank is small beside a building and fits its lane
+let UK = 1;                       // an alternative model set may draw its units larger: formations spread to match
+/** Draw units `k` times the shipped size (alternative model sets, see modelset.js). */
+export function setUnitScale(k) { UK = Math.max(0.5, Math.min(2.5, Number(k) || 1)); US = 0.64 * UK; }
 const FOOT = 0.8;                 // infantry are drawn smaller again, so a soldier is not as tall as a tank
-const ROW = [0, 5, 2, 2];         // figures per marching row, by tier
-const GAP = [0, 9.5, 18, 22];     // distance between rows
-const LANE = [0, 5.4, 12.5, 15];  // sideways spacing inside a row
+let ROW = [0, 5, 2, 2];           // figures per marching row, by tier
+let GAP = [0, 9.5, 18, 22];       // distance between rows
+let LANE = [0, 5.4, 12.5, 15];    // sideways spacing inside a row
+/** A model set may march its figures in its own formation: { row, gap, lane }, each [unused, tier 1, tier 2, tier 3]. */
+export function setFormation(f) {
+  const ok = a => Array.isArray(a) && a.length === 4 && a.slice(1).every(x => x > 0);
+  if (f && ok(f.row)) ROW = f.row.map(Math.round);
+  if (f && ok(f.gap)) GAP = f.gap.slice();
+  if (f && ok(f.lane)) LANE = f.lane.slice();
+}
 const LOD_CLOSE = 2.6, LOD_FAR = 0.9;   // device pixels per model unit: above the first the close models are drawn, below the second the far ones
 const LOD_CROWD = 260;            // more figures than this on screen and everything drops one detail level
 const PREDICT_TTL = 1.5;          // seconds a predicted order may wait for the server
@@ -189,6 +200,8 @@ export class GameView {
     // Orders default to persistent auto dispatch until toggled off. Lessons start with single
     // dispatch, which is what they teach first; the auto dispatch lesson switches it on.
     this.autoMode = !m.tutorial;
+    this.weather = weatherOf(this.weatherPick || m.weather);   // the sky: drawing only (weather.js)
+    if (this.r3d && this.r3d.setWeather) this.r3d.setWeather(this.weather);
     this.autoRev = 0;
     this.ownerRev = 0;
     this.autoPaths = null;
@@ -197,6 +210,7 @@ export class GameView {
     this.selArmy = -1;              // one of my columns on the road, picked to halt or to send somewhere else
     this.routeHover = null;         // the cancel controls under the pointer
     this.guide = null;              // what the tutorial is pointing at
+    this.locked = false; this.spot = null; cancelAnimationFrame(this.flyRaf);
     this.cam = { z: 1, x: 0, y: 0 };
     this.setFeat(m.feat || []);
     this.fx = [];
@@ -286,7 +300,9 @@ export class GameView {
   /** What the 3D renderer may spend at the current preset. */
   preset3d() {
     const high = this.q === QUALITY.high, fx = this.settings.effects !== false;
-    return { shadowSize: high ? 4096 : 2048, ao: high && fx, bloom: fx, reflections: true };
+    // Material tiles are 256 px: more than a tile ever covers on screen in a match. The showcase can be
+    // inspected far closer (zoomMax), so there they are 512.
+    return { shadowSize: high ? 4096 : 2048, ao: high && fx, bloom: fx, reflections: true, weather: weatherOf(this.weather), texSize: this.zoomMax ? 512 : 256 };
   }
 
   side(p) { return p >= 0 ? this.sides[p] : this.neutral; }
@@ -693,8 +709,10 @@ export class GameView {
     this.cv.height = Math.round(H * dpr);
     if (!this.map) return;
 
-    const padT = 54, padB = 74, padX = 6;
-    const aw = W - padX * 2, ah = H - padT - padB;
+    let padT = 54;
+    // On a phone the skill bar sits above the send bar, so more of the bottom is taken.
+    const padB = W <= 520 ? 126 : 74, padX = 6;
+    let aw = W - padX * 2, ah = H - padT - padB;
     this.flip = ah > aw;
     // The 3D view keeps a wider border, most of it on the far side, for the skyline around the field.
     const [mL, mR, mT, mB] = this.use3d
@@ -711,9 +729,17 @@ export class GameView {
     this.vh = y1 - y0 + mT + mB;
     // The whole map fitted to the screen, then the camera: zoom about the middle of the play area and pan,
     // never so far that the map leaves the screen.
+    // A panel docked over the top right of the canvas (the tutorial) must not cover the map: the map
+    // is fitted beside it or below it, whichever leaves it larger.
+    const ins = this.inset;
+    if (ins && (ins.w > 0 || ins.h > 0)) {
+      const beside = Math.min((aw - ins.w) / this.vw, ah / this.vh), below = Math.min(aw / this.vw, (ah - ins.h) / this.vh);
+      if (beside >= below && aw - ins.w > 160) aw -= ins.w;
+      else if (ah - ins.h > 160) { padT += ins.h; ah -= ins.h; }
+    }
     const fs = Math.min(aw / this.vw, ah / this.vh);
     const fit = this.fit = { s: fs, ox: padX + (aw - this.vw * fs) / 2, oy: padT + (ah - this.vh * fs) / 2, padX, padT, aw, ah };
-    const z = this.cam.z = Math.max(1, Math.min(ZOOM_MAX, this.cam.z));
+    const z = this.cam.z = Math.max(1, Math.min(this.zoomMax || ZOOM_MAX, this.cam.z));
     this.s = fs * z;
     const place = (pad, room, size, at) => (size <= room ? pad + (room - size) / 2 : Math.max(pad + room - size, Math.min(pad, at)));
     const cx = padX + aw / 2, cy = padT + ah / 2;
@@ -747,12 +773,12 @@ export class GameView {
     const painted = buildTerrain(c, {
       k, ox: dpr * this.ox, oy: dpr * this.oy, nodes: this.vn, roads: this.edges, R: this.R, seed,
       scenery: this.use3d ? { blocks: this.scenery.towers, lamps: this.scenery.lamps } : this.scenery,
-      bake: !this.use3d, props3d: this.use3d,
+      bake: !this.use3d, props3d: this.use3d, weather: weatherOf(this.weather),
     }, wet);
     if (this.use3d) {
       this.r3d.resize(this.cv.width, this.cv.height);
       this.r3d.setGround(c, wet);
-      this.r3d.setScenery({ towers: this.scenery.towers, trees: painted.trees });
+      this.r3d.setScenery({ towers: this.scenery.towers, trees: painted.trees, props: this.scenery.props || [] });
     }
   }
 
@@ -806,7 +832,7 @@ export class GameView {
   /** Zoom by `factor`, keeping the map point under the screen point (clientX, clientY) where it is. */
   zoomAt(factor, clientX, clientY) {
     const r = this.cv.getBoundingClientRect(), c = this.camLive || { s: this.s, ox: this.ox, oy: this.oy };
-    const z0 = c.s / this.fit.s, z1 = Math.max(1, Math.min(ZOOM_MAX, z0 * factor));
+    const z0 = c.s / this.fit.s, z1 = Math.max(1, Math.min(this.zoomMax || ZOOM_MAX, z0 * factor));
     if (Math.abs(z1 - z0) < 1e-4) return;
     const px = clientX - r.left, py = clientY - r.top;
     const vx = (px - c.ox) / c.s, vy = (py - c.oy) / c.s, s1 = this.fit.s * z1;
@@ -839,6 +865,91 @@ export class GameView {
     if (this.hooks.onCamera) this.hooks.onCamera(this.camKind);
   }
 
+  /**
+   * Fly the camera so base `i` sits in the middle of the play area at zoom `z`. The picture is
+   * stretched while it moves and drawn properly on arrival (see previewCam).
+   */
+  focusNode(i, z = 1.9, ms = 700) {
+    const n = this.vn && this.vn[i], f = this.fit;
+    if (!n || !f) return;
+    const s1 = f.s * Math.max(1, Math.min(ZOOM_MAX, z));
+    // The same limits resize() applies, so arriving does not jump: the map never leaves the screen.
+    const place = (pad, room, size, at) => (size <= room ? pad + (room - size) / 2 : Math.max(pad + room - size, Math.min(pad, at)));
+    this.flyTo({
+      s: s1,
+      ox: place(f.padX, f.aw, this.vw * s1, f.padX + f.aw / 2 - n.x * s1),
+      oy: place(f.padT, f.ah, this.vh * s1, f.padT + f.ah / 2 - n.y * s1),
+    }, ms);
+  }
+
+  flyTo(to, ms = 600) {
+    const from = this.camLive || { s: this.s, ox: this.ox, oy: this.oy }, t0 = performance.now();
+    cancelAnimationFrame(this.flyRaf);
+    const step = now => {
+      const k = ms > 0 ? Math.min(1, (now - t0) / ms) : 1, e = k * k * (3 - 2 * k);
+      this.previewCam({ s: from.s + (to.s - from.s) * e, ox: from.ox + (to.ox - from.ox) * e, oy: from.oy + (to.oy - from.oy) * e }, 'intro', true);
+      if (k < 1) this.flyRaf = requestAnimationFrame(step); else this.commitCam();
+    };
+    step(t0);
+  }
+
+  /**
+   * The start countdown: orders are locked, the camera closes in on the player's own base and
+   * a beacon marks it. `on = false` ends it: back to the whole map, orders open.
+   */
+  intro(on) {
+    cancelAnimationFrame(this.flyRaf);
+    if (on) {
+      const home = this.owner ? this.owner.indexOf(this.me) : -1;
+      this.locked = true;
+      this.spot = home >= 0 ? { node: home, t0: performance.now() / 1000 } : null;
+      if (home >= 0) this.focusNode(home);
+    } else {
+      const was = this.locked;
+      this.locked = false;
+      this.spot = null;
+      if (was && this.map) {
+        if (this.camLive) this.commitCam();
+        if (this.cam.z !== 1) this.flyTo({ s: this.fit.s, ox: this.fit.ox, oy: this.fit.oy }, 450);
+      }
+    }
+  }
+
+  /** The beacon on the player's base during the start countdown: rings closing in, and a marker above. */
+  drawSpot(ctx, lt) {
+    const sp = this.spot, n = sp && this.vn[sp.node];
+    if (!n) return;
+    const col = this.sides && this.sides[this.me] ? this.sides[this.me].tc.main : '#ffe07a';   // the player's own colour
+    const age = lt - sp.t0;
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (let j = 0; j < 3; j++) {                          // rings that close in on the base, one a second
+      const ph = (((age + j / 3) % 1) + 1) % 1, r = this.R + 14 + (1 - ph) * 46;
+      ctx.globalAlpha = 0.15 + 0.75 * ph;
+      ctx.strokeStyle = j === 0 ? '#ffffff' : col;
+      ctx.lineWidth = 2 + 2.4 * ph;
+      ctx.beginPath(); ctx.ellipse(n.x, n.y + 1, r, r * F + 2, 0, 0, TAU); ctx.stroke();
+    }
+    const beat = 0.5 + 0.5 * Math.sin(age * 6);
+    const y = n.y - this.topOf(sp.node) - 20 - beat * 7;   // a marker pointing down at it
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = col; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(n.x - 11, y - 13); ctx.lineTo(n.x + 11, y - 13); ctx.lineTo(n.x, y + 4); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+
+  /**
+   * Keep the fitted map clear of a panel docked at the top right of the canvas: `w` pixels from
+   * the right edge, `h` pixels below the HUD. null (or zeros) gives the whole canvas back.
+   */
+  setInset(o) {
+    const w = Math.max(0, Math.round((o && o.w) || 0)), h = Math.max(0, Math.round((o && o.h) || 0));
+    const was = this.inset || { w: 0, h: 0 };
+    if (was.w === w && was.h === h) return;
+    this.inset = w || h ? { w, h } : null;
+    if (this.map) { if (this.camLive) this.commitCam(); this.resize(); }       // zoom is kept; the view is clamped to the new area
+  }
+
   /** Back to the whole map. */
   resetCam() {
     if (!this.map || (this.cam.z === 1 && !this.camLive)) return;
@@ -853,7 +964,7 @@ export class GameView {
   }
 
   canPlay() {
-    return this.active && this.winner === null && this.me >= 0 && this.alive[this.me];
+    return this.active && !this.locked && this.winner === null && this.me >= 0 && this.alive[this.me];
   }
 
   linked(a, b) { return this.adj[a].includes(b); }
@@ -1399,10 +1510,26 @@ export class GameView {
   // ------------------------------------------------------------ skills
 
   /** Start casting skill `slot`: untargeted skills fire at once, the rest enter targeting. */
+  /** Why skill `slot` cannot be used right now ('needL3', 'charging', 'cooldown'), or '' if it can. */
+  skillBlock(slot, def = this.skillDef(slot)) {
+    const s = this.skillState();
+    if (!s || !def) return 'cooldown';
+    if (def.super) return s.l3 < s.l3Need ? 'needL3' : s.charge < s.need ? 'charging' : '';
+    return s.cd[slot] > 0 ? 'cooldown' : '';
+  }
+
   beginTarget(slot) {
     if (!this.canPlay()) return;
     if (this.paused) return this.hooks.notify('paused');
     const def = this.skillDef(slot);
+    // A skill that cannot be used now is never aimed: saying why is all that happens. (From the
+    // keyboard this used to start aiming anyway, and every click after it was taken as a target.)
+    const why = this.skillBlock(slot, def);
+    if (why) {
+      if (this.targeting && this.targeting.slot === slot) this.targeting = null;
+      if (this.hooks.refused) this.hooks.refused(why, slot);
+      return;
+    }
     this.drag = null;
     this.selArmy = -1;
     this.targeting = this.targeting && this.targeting.slot === slot ? null : { slot, def, src: -1 };
@@ -1416,10 +1543,12 @@ export class GameView {
 
   /** May skill `def` be aimed at city i? (The server decides; this only guides the pointer.) */
   targetOk(def, i) {
-    if (i < 0 || this.isRuin(i)) return false;
+    if (i < 0) return false;
+    if (def.target === 'cityPair') return true;          // a wormhole joins any two bases, ruins included
+    if (this.isRuin(i)) return false;
     const o = this.owner[i];
     if (def.target === 'enemyCity') return o >= 0 && o !== this.me && !(this.cfg.skills.lastBaseImmune && this.basesOf(o) <= 1);
-    return o === this.me;                                // ownCity, and both ends of ownCityPair
+    return o === this.me;                                // ownCity
   }
 
   targetClick(p) {
@@ -1435,7 +1564,7 @@ export class GameView {
       else this.hooks.notify('needOwnCity');
       return;
     }
-    if (def.target !== 'ownCityPair') return this.cast(T.slot, { node });
+    if (def.target !== 'cityPair') return this.cast(T.slot, { node });
     // two of my bases: one end, then the other
     if (T.src < 0) T.src = node;
     else if (node !== T.src) this.cast(T.slot, { node: T.src, to: node });
@@ -1561,12 +1690,13 @@ export class GameView {
       this.drawNode(ctx, i, lt);
     }
     while (ui < items.length) this.drawUnit(ctx, items[ui++], t, lt);
-    this.drawRain(ctx, lt);
+    this.drawSky(ctx, lt);
 
     for (let i = 0; i < this.N; i++) this.drawPlate(ctx, i, lt);
     this.drawArmyPlates(ctx);
     this.drawPortals(ctx, t);
     this.drawGuide(ctx, lt);
+    this.drawSpot(ctx, lt);
     this.drawAutoBadges(ctx, lt);
     this.drawAutoCancels(ctx);
     this.drawRejects(ctx, lt);
@@ -1599,29 +1729,18 @@ export class GameView {
    * wet ground. Drawn under the labels so numbers stay crisp; off with reduced
    * effects and on the low preset.
    */
-  drawRain(ctx, lt) {
-    if (!this.settings.effects || this.q === QUALITY.low) return;
-    const W = this.cv.width / (this.dpr * this.s), H = this.cv.height / (this.dpr * this.s);
-    const x0 = -this.ox / this.s, y0 = -this.oy / this.s;
-    ctx.lineWidth = 0.8;
-    for (let i = 0; i < 28; i++) {
-      const beat = lt / (0.9 + (i % 5) * 0.13) + i * 0.37;
-      const ph = beat % 1, h = hash(i * 7919 + Math.floor(beat) * 104729);
-      const x = x0 + ((h % 1000) / 1000) * W, y = y0 + (((h >>> 10) % 1000) / 1000) * H;
-      ctx.strokeStyle = `rgba(214,228,242,${(0.36 * (1 - ph)).toFixed(3)})`;
-      ctx.beginPath(); ctx.ellipse(x, y, 1.5 + ph * 7, (1.5 + ph * 7) * F, 0, 0, TAU); ctx.stroke();
-    }
-    ctx.strokeStyle = 'rgba(216,228,242,.2)';
-    ctx.lineWidth = 0.9;
-    ctx.beginPath();
-    for (let i = this.q === QUALITY.high ? 130 : 80; i > 0; i--) {
-      const h = hash(Math.imul(i, 0x9e3779b1));
-      const fall = (lt * (620 + (h % 300)) + ((h >>> 8) % 4096)) % (H + 80);
-      const x = x0 + (((h >>> 4) % 2000) / 2000) * (W + 160) - fall * 0.22;
-      const y = y0 - 40 + fall, len = 14 + (h % 12);
-      ctx.moveTo(x, y); ctx.lineTo(x - len * 0.22, y + len);
-    }
-    ctx.stroke();
+/** What falls or drifts over the field under the match's weather (weather.js). */
+  drawSky(ctx, lt) {
+    drawWeather(ctx, weatherOf(this.weather), lt, {
+      x0: -this.ox / this.s, y0: -this.oy / this.s, W: this.cv.width / (this.dpr * this.s), H: this.cv.height / (this.dpr * this.s),
+    }, { effects: this.settings.effects !== false, quality: this.settings.quality || 'high', paused: !!this.paused });
+  }
+
+  /** Change the sky of the match on screen (a preview aid; a match's weather comes with its start message). */
+  setWeather(name) {
+    this.weather = weatherOf(name);
+    if (this.r3d && this.r3d.setWeather) this.r3d.setWeather(this.weather);
+    if (this.map) this.resize();                          // the ground is painted for its weather
   }
 
   /**
@@ -1631,10 +1750,10 @@ export class GameView {
    */
   layoutArmies(t) {
     const items = this.items, pool = this.pool;
-    // How many figures stand for an army is a drawing choice (see figuresFor in art.js): one per soldier
-    // up to `exact`, then one more per `group`, never more than the quality preset's cap.
+    // How many figures stand for an army is a drawing choice (see figuresFor in art.js): one per batch
+    // of soldiers of a kind, in wider batches when the quality preset's cap would be passed.
     const fig = (this.g3 && this.g3.opts.figures) || FIGURES;
-    const figOpts = { exact: fig.exact, group: fig.group, cap: Math.min(fig.cap, this.q.sprites) };
+    const figOpts = { batch: fig.batch || FIGURES.batch, cap: Math.min(fig.cap || FIGURES.cap, this.q.sprites) };
     const settle = 1 - Math.exp(-7 * Math.max(0, Math.min(0.1, t - (this.layT === undefined ? t : this.layT))));   // simulation time: nothing slides while paused
     this.layT = t;
     const arrive = this.cfg.march.arriveAt;
@@ -1672,19 +1791,20 @@ export class GameView {
       for (let tier = 3; tier >= 1; tier--) {
         const c = share[tier - 1];
         if (!c) continue;
-        const row = ROW[tier];
+        const row = ROW[tier], TK = UK * TIER_SCALE[tier];    // heavier tiers are drawn larger and stand further apart
         for (let j = 0; j < c; j++, k++) {
           let x, y, grow = 1;
           if (a.st === 2) {                               // drawn up around the city it is attacking
-            const ringNo = Math.floor(k / 6), idx = k % 6;
-            const ang = base + (idx - 2.5) * 0.2 + ringNo * 0.1, rad = 68 + ringNo * 12;      // outside the compound wall
+            // Larger figures (a model set's unit scale) stand fewer to a ring and further apart.
+            const per = Math.max(3, Math.round(6 / TK)), ringNo = Math.floor(k / per), idx = k % per;
+            const ang = base + (idx - (per - 1) / 2) * 0.22 * TK + ringNo * 0.1, rad = 68 + (TK - 1) * 10 + ringNo * 13 * TK;      // outside the compound wall
             x = Z.x + Math.cos(ang) * rad;
             y = Z.y + Math.sin(ang) * rad * 0.78 + 4;
           } else {
             const r = Math.floor(j / row), inRow = Math.min(row, c - r * row);
             // Each figure remembers its place in the column and slides to a new one, so a column that
             // loses or gains figures closes up instead of jumping; one that joins a column on the road grows in.
-            const want = ((j % row) - (inRow - 1) / 2) * LANE[tier], rel = back + r * GAP[tier], id = tier * 64 + j;
+            const want = ((j % row) - (inRow - 1) / 2) * LANE[tier] * TK, rel = back + r * GAP[tier] * TK, id = tier * 64 + j;
             let q = sm.get(id);
             if (!q) sm.set(id, (q = { off: want, rel, born: fresh ? -1 : t }));
             else { q.off += (want - q.off) * settle; q.rel += (rel - q.rel) * settle; }
@@ -1702,7 +1822,7 @@ export class GameView {
           it.fire = fire; it.tx = tx; it.ty = ty;
           items.push(it);
         }
-        back += Math.ceil(c / row) * GAP[tier] + 5;
+        back += Math.ceil(c / row) * GAP[tier] * UK * TIER_SCALE[tier] + 5;
       }
     }
     items.sort((p, q) => p.y - q.y);
@@ -1739,8 +1859,8 @@ export class GameView {
     const key = `${f}|${sub}|${tier}`;
     let sp = (this.specs || (this.specs = new Map())).get(key);
     if (!sp) {
-      const u = unitSpec(f, sub, tier);
-      sp = { ...u, pivot: u.pivot * US, muzzle: u.muzzle * US, mz: u.mz * US, hover: u.hover * US, bob: u.bob * US, drift: u.drift * US, foot: [u.foot[0] * US, u.foot[1] * US], glow: u.glow && [u.glow[0] * US, u.glow[1] * US, u.glow[2] * US * 0.7] };
+      const u = unitSpec(f, sub, tier), K = US * TIER_SCALE[tier];
+      sp = { ...u, pivot: u.pivot * K, muzzle: u.muzzle * K, mz: u.mz * K, hover: u.hover * K, bob: u.bob * K, drift: u.drift * K, foot: [u.foot[0] * K, u.foot[1] * K], glow: u.glow && [u.glow[0] * K, u.glow[1] * K, u.glow[2] * K * 0.7] };
       this.specs.set(key, sp);
     }
     return sp;
@@ -1751,16 +1871,17 @@ export class GameView {
     const fam = weaponOf(s.f, s.sub, tier);
     const moving = a.st === 0 && a.v > 1;
     const lod = this.unitLod === undefined ? 1 : this.unitLod, grow = it.grow === undefined ? 1 : it.grow;
+    const TS = TIER_SCALE[tier];                           // one figure stands for a batch; heavier tiers are drawn larger
     // Everything a unit does is timed by `t`, the simulation clock: it stops on pause and follows the game speed.
 
     if (tier === 1) {
       const dir8 = ((Math.round(Math.atan2(it.dy, it.dx) / (Math.PI / 4)) % 8) + 8) % 8;
       const frame = moving ? walkFrame(t, it.k) : 0;
-      if (this.g3) this.g3.add(`s|${s.f}|${s.sub}|${s.tc.id}|${frame}|${lod}`, () => buildSoldier(s.f, s.sub, s.tc, frame, lod), it.x, it.y, 0, Math.atan2(it.dy / F, it.dx), US * FOOT * grow);
-      else this.sprite(ctx, soldierSprite(this.sprites, s.f, s.sub, s.tc, dir8, frame), it.x, it.y, FOOT * grow);
+      if (this.g3) this.g3.add(`s|${s.f}|${s.sub}|${s.tc.id}|${frame}|${lod}`, () => buildSoldier(s.f, s.sub, s.tc, frame, lod), it.x, it.y, 0, Math.atan2(it.dy / F, it.dx), US * FOOT * TS * grow);
+      else this.sprite(ctx, soldierSprite(this.sprites, s.f, s.sub, s.tc, dir8, frame), it.x, it.y, FOOT * TS * grow);
       if (it.fire) {
         const m = soldierMuzzle(s.f, s.sub, it.dx, it.dy);
-        this.fire(it, fam, it.x + m[0] * US * FOOT, it.y + m[1] * US * FOOT, t, lt);
+        this.fire(it, fam, it.x + m[0] * US * FOOT * TS, it.y + m[1] * US * FOOT * TS, t, lt);
       }
       return;
     }
@@ -1800,9 +1921,9 @@ export class GameView {
       }
       ctx.globalAlpha = 1;
     }
-    const lift = uy - y, sc = US * grow;
+    const lift = uy - y, sc = US * TS * grow;
     if (g3) g3.add(`h|${s.f}|${s.sub}|${tier}|${s.tc.id}|${lod}`, () => buildHull(s.f, s.sub, tier, s.tc, lod), ux, uy, lift, ha, sc);
-    else this.sprite(ctx, hullSprite(this.sprites, s.f, s.sub, tier, s.tc, hd), ux, y, grow);
+    else this.sprite(ctx, hullSprite(this.sprites, s.f, s.sub, tier, s.tc, hd), ux, y, TS * grow);
 
     const px = ux + Math.cos(ha) * spec.pivot, py = y + Math.sin(ha) * spec.pivot * F;
     // The turret traverses to its target at a finite rate and looks about when it has none.
@@ -1814,9 +1935,9 @@ export class GameView {
     const td = dirIndex(aim);
     const ta = g3 ? aim : td * STEP, tx = Math.cos(ta), ty = Math.sin(ta) * F;
     const mx = px + tx * spec.muzzle, my = py + ty * spec.muzzle - spec.mz;
-    const rc = it.fire ? recoilAt(fam, this.fire(it, fam, mx, my, t, lt)) * US : 0;
+    const rc = it.fire ? recoilAt(fam, this.fire(it, fam, mx, my, t, lt)) * US * TS : 0;
     if (g3) g3.add(`t|${s.f}|${s.sub}|${tier}|${s.tc.id}|${lod}`, () => buildTurret(s.f, s.sub, tier, s.tc, lod), px - tx * rc, py + lift - ty * rc, lift, ta, sc);
-    else this.sprite(ctx, turretSprite(this.sprites, s.f, s.sub, tier, s.tc, td), px - tx * rc, py - ty * rc, grow);
+    else this.sprite(ctx, turretSprite(this.sprites, s.f, s.sub, tier, s.tc, td), px - tx * rc, py - ty * rc, TS * grow);
     if (spec.glow) this.glows.push(px + tx * (spec.glow[0] - rc), py + ty * (spec.glow[0] - rc) - spec.glow[1], spec.glow[2], s.f === 'meridian' ? s.G : s.A, it.k);
   }
 
@@ -2755,7 +2876,7 @@ export class GameView {
       ctx.globalAlpha = 1;
       return;
     }
-    if (def.target === 'ownCityPair') {
+    if (def.target === 'cityPair') {
       if (T.src < 0) return;
       const a = this.vn[T.src], ok = h >= 0 && h !== T.src && this.targetOk(def, h);
       drawChronoLink(ctx, a, ok ? this.vn[h] : p, lt, ok);       // both bases marked, linked through the air: not a road
@@ -2994,7 +3115,6 @@ export class GameView {
     };
     el.textContent = '';
     el.style.setProperty('--c', this.color(o).main);
-    el.classList.toggle('right', this.ox + this.vn[i].x * this.s < this.cv.clientWidth / 2);
     const head = mk('div', 'info-head');
     head.append(mk('strong', '', ruin ? t('info.ruin') : this.buildingName(o, lv)), mk('span', 'info-lv', ruin ? '' : t('info.level', { n: lv })));
     const stats = mk('div', 'info-stats');
@@ -3028,7 +3148,35 @@ export class GameView {
     for (const au of aus) el.append(mk('p', 'info-auto', t('game.auto.info', { pct: Math.round(au.pct * 100), state: t(`game.auto.state.${this.paused ? 5 : au.state}`) })));
     el.append(stats);
     el.classList.remove('hidden');
+    this.placeInfo(el, i);
   }
+
+  /**
+   * Put the details card in a corner where it covers no base: top left, top right, or above the
+   * bottom bar on either side. The corner away from the base it describes is tried first; a
+   * corner another panel occupies (the tutorial, top right) is not used.
+   */
+  placeInfo(el, i) {
+    const W = this.cv.clientWidth, H = this.cv.clientHeight, w = el.offsetWidth || 250, h = el.offsetHeight || 180;
+    const onLeft = this.ox + this.vn[i].x * this.s < W / 2;
+    const busyRight = this.inset ? this.inset.w : 0;             // a docked panel holds the top right
+    const spots = [
+      { cls: '', x: 8, y: 62 }, { cls: 'right', x: W - 8 - w, y: 62, skip: busyRight > 0 },
+      { cls: 'low', x: 8, y: H - 86 - h }, { cls: 'low right', x: W - 8 - w, y: H - 150 - h },
+    ].filter(sp => !sp.skip);
+    if (onLeft) spots.sort((a, b) => (b.cls.includes('right') ? 1 : 0) - (a.cls.includes('right') ? 1 : 0));
+    const R = (this.R + 14) * this.s;
+    const covers = sp => this.vn.reduce((n, v) => {
+      const x = this.ox + v.x * this.s, y = this.oy + v.y * this.s - 10 * this.s;
+      return n + (x > sp.x - R && x < sp.x + w + R && y > sp.y - R && y < sp.y + h + R * 0.8 ? 1 : 0);
+    }, 0);
+    let best = spots[0], bn = Infinity;
+    for (const sp of spots) { const n = covers(sp); if (n < bn) { bn = n; best = sp; } if (!n) break; }
+    for (const c of ['right', 'low']) el.classList.toggle(c, best.cls.split(' ').includes(c));
+  }
+
+  /** A phone-width screen: the HUD is abbreviated. */
+  narrow() { return this.cv.clientWidth > 0 && this.cv.clientWidth <= 520; }
 
   buildHud() {
     const hud = this.els.hud;
@@ -3068,7 +3216,8 @@ export class GameView {
     for (const a of this.st.armies.values()) { army[a.o] += a.n; power[a.o] += a.pow; }
     this.chips.forEach((ch, p) => {
       const dead = !this.alive[p];
-      const text = dead ? t('hud.out') : `${t('hud.bases', { count: bases[p] })} · ${t('hud.army', { n: army[p] })} · ${t('hud.power', { n: power[p] })}`;
+      // On a phone the bar has room for numbers only: bases and soldiers.
+      const text = dead ? t('hud.out') : this.narrow() ? `${bases[p]} ⌂ · ${army[p]}` : `${t('hud.bases', { count: bases[p] })} · ${t('hud.army', { n: army[p] })} · ${t('hud.power', { n: power[p] })}`;
       if (text !== ch.text) { ch.text = text; ch.stat.textContent = text; }
       ch.c.classList.toggle('dead', dead);
     });

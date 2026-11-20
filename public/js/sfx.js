@@ -37,6 +37,8 @@ export const sfx = {
   capture() { tone(523, 0.1); tone(784, 0.16, { at: 0.09 }); },
   lost() { tone(320, 0.14, { type: 'sawtooth' }); tone(190, 0.24, { type: 'sawtooth', at: 0.12 }); },
   upgrade() { tone(523, 0.08); tone(659, 0.08, { at: 0.07 }); tone(880, 0.16, { at: 0.14 }); },
+  tick() { tone(660, 0.09, { type: 'triangle', vol: 0.05 }); },
+  go() { tone(660, 0.1, { type: 'triangle', vol: 0.05 }); tone(990, 0.3, { type: 'triangle', vol: 0.06, at: 0.1 }); },
   win() { [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.22, { at: i * 0.13, vol: 0.05 })); },
   lose() { [392, 330, 262, 196].forEach((f, i) => tone(f, 0.3, { at: i * 0.17, type: 'sawtooth', vol: 0.04 })); },
 };

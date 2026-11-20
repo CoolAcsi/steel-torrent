@@ -420,6 +420,8 @@ button.badge:hover { color: var(--text); border-color: var(--text); }
   pointer-events: none;
 }
 #info.right { left: auto; right: 8px; }
+#info.low { top: auto; bottom: calc(86px + env(safe-area-inset-bottom)); }
+#info.low.right { bottom: calc(150px + env(safe-area-inset-bottom)); }   /* clear of the skill bar */
 .info-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .info-head strong { font-size: 15px; font-weight: 800; letter-spacing: .03em; }
 .info-lv { flex: none; color: var(--amber); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
@@ -1078,3 +1080,113 @@ body.armory.gray canvas { filter: grayscale(1); }
 }
 @media (prefers-reduced-motion: reduce) { .tut-ring, .tut-road, .tut-frame { animation: none; } }
 /* ==== end tutorial ==== */
+
+/* ---- start countdown: over the map, under the menus; the camera is on the player's base meanwhile */
+#countdown {
+  position: absolute; left: 50%; top: 68px; transform: translateX(-50%); z-index: 30;
+  display: grid; justify-items: center; gap: 2px; padding: 10px 26px 12px; pointer-events: none;
+  background: linear-gradient(180deg, rgba(10, 14, 20, .88), rgba(10, 14, 20, .7));
+  border: 1px solid rgba(255, 255, 255, .16); border-top: 3px solid var(--c, #ffd34d);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .45); text-align: center; max-width: calc(100vw - 32px);
+}
+#countdown.hidden { display: none; }
+#cd-label { font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+#cd-num { font-size: 64px; line-height: 1; font-weight: 800; font-variant-numeric: tabular-nums; color: #fff; text-shadow: 0 0 22px var(--c, #ffd34d); }
+#cd-num.tick { animation: cd-tick .9s ease-out both; }
+#cd-hint { font-size: 13px; color: var(--c, #ffd34d); font-weight: 600; }
+@keyframes cd-tick { 0% { transform: scale(1.7); opacity: 0; } 18% { transform: scale(1); opacity: 1; } 100% { transform: scale(.94); opacity: .85; } }
+@media (max-height: 520px) { #countdown { top: 52px; padding: 6px 18px 8px; } #cd-num { font-size: 44px; } }
+@media (prefers-reduced-motion: reduce) { #cd-num.tick { animation: none; } }
+
+/* ---- lounge: open rooms on the home screen, room title and private key in the room */
+.lounge { margin-top: 16px; }
+.lounge-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.lounge-head b { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--text); }
+.lounge-head small { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.lounge .room-list { margin-top: 8px; max-height: min(38vh, 300px); overflow-y: auto; overscroll-behavior: contain; }
+.lounge-empty { margin: 8px 0 0; padding: 14px 12px; color: var(--muted); font-size: 13px; text-align: center; border: 1px dashed var(--edge); border-radius: 3px; }
+.room-list button { min-height: 48px; }
+.room-list button:disabled { opacity: .55; cursor: default; }
+.rl-main { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.rl-name { color: var(--text); font-size: 14px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rl-sub { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rl-lock { flex: none; display: inline-flex; align-items: center; gap: 4px; color: var(--amber); font-size: 11.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.rl-lock .ico { width: 14px; height: 14px; }
+.rl-join { flex: none; padding: 3px 10px; border: 1px solid var(--edge); border-radius: 3px; color: var(--text); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.room-list button.private { border-left-color: #8fa3b8; }
+
+.room-title { min-width: 0; flex: 1; }
+.room-name-row { display: flex; align-items: center; gap: 10px; margin: 2px 0 6px; }
+.room-name {
+  flex: 1; min-width: 0; width: 100%; height: 40px; padding: 0 8px; margin-left: -8px;
+  font: 700 24px/1.1 var(--font-ui); color: var(--text); text-overflow: ellipsis;
+  background: transparent; border: 1px solid transparent; border-radius: 3px;
+}
+.room-name:not(:disabled):hover, .room-name:not(:disabled):focus { background: rgba(255, 255, 255, .05); border-color: rgba(255, 255, 255, .22); }
+.room-name:disabled { opacity: 1; -webkit-text-fill-color: var(--text); }
+.room-lock { flex: none; display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border: 1px solid rgba(232, 183, 44, .5); border-radius: 3px; color: var(--amber); font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.room-lock.hidden { display: none; }
+.room-lock .ico { width: 14px; height: 14px; }
+.room-code-row > small { color: var(--muted); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+.room-code-row .room-code { font-size: 20px; letter-spacing: .22em; text-shadow: none; }
+.key-row { display: flex; gap: 8px; margin-top: 8px; }
+.key-row.hidden { display: none; }
+.key-row input { flex: 1; min-width: 0; height: 34px; padding: 0 10px; font: 600 15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .08em; }
+#opt-private-row.hidden { display: none; }
+
+#key-dialog { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 16px; background: rgba(4, 6, 8, .72); }
+#key-dialog.hidden { display: none; }
+#key-dialog .panel { width: 100%; max-width: 360px; }
+#key-dialog h2 { margin: 2px 0 4px; font-size: 20px; overflow-wrap: anywhere; }
+#key-dialog .hint { margin: 0 0 12px; }
+#key-dialog #key-error { min-height: 1.3em; margin: 8px 0 0; }
+#key-dialog input { width: 100%; font: 600 16px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .08em; }
+.key-actions { display: flex; gap: 8px; margin-top: 12px; }
+.key-actions .btn { flex: 1; }
+/* The room title gets the full width of the panel: language and Leave sit on their own line above it. */
+.room-head { flex-wrap: wrap; }
+.room-head .room-actions { order: -1; width: 100%; }
+.room-title { flex: 1 1 100%; }
+.room-name { font-size: 22px; }
+
+/* ---- phones: everything in the match fits a 320-430 px wide screen, and controls are finger-sized */
+#hud-bottom .btn.rally { display: inline-flex; align-items: center; gap: 5px; }
+#hud-bottom .btn.rally .ico { display: none; }
+@media (max-width: 720px) {
+  #hud-bottom .btn.rally .ico { display: inline-block; }
+  #hud-bottom .btn.rally > span { display: none; }
+}
+@media (max-width: 520px) {
+  #hud-top { gap: 5px; padding-left: 6px; padding-right: 6px; }
+  #hud-top .hud-btns { gap: 4px; }
+  .chip { padding: 2px 7px 2px 6px; border-left-width: 4px; gap: 5px; }
+  .chip-ico { width: 20px; height: 20px; }
+  .chip-name { max-width: 74px; font-size: 12px; }
+  .chip-stat { font-size: 10.5px; }
+  #hud-players { -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; scroll-snap-type: x proximity; }
+  #hud-players .chip { scroll-snap-align: start; }
+  #hud-bottom { gap: 6px; padding: 5px 6px; }
+  #hud-bottom .seg { gap: 3px; }
+  #hud-bottom .seg button { min-width: 0; width: 52px; padding: 0 2px; height: 40px; }
+  #hud-bottom .btn.auto, #hud-bottom .btn.rally { margin-left: 0; min-width: 40px; height: 40px; justify-content: center; padding: 0 9px; }
+  #hud-bottom .btn.rally-go, #hud-bottom #btn-auto-stop { max-width: 34vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #countdown { top: 56px; padding: 6px 18px 8px; }
+  #cd-num { font-size: 46px; }
+  #cd-label { font-size: 11px; }
+}
+/* A touch screen has no keyboard to list shortcuts for. */
+@media (hover: none) and (pointer: coarse) {
+  #btn-keys { display: none; }
+}
+@media (max-width: 380px) {
+  #hud-bottom .seg button { width: 46px; font-size: 13px; }
+  .speed-select { max-width: 56px; }
+}
+@keyframes cd-tick { 0% { transform: scale(1.5); opacity: .35; } 18% { transform: scale(1); opacity: 1; } 100% { transform: scale(.94); opacity: .9; } }
+/* Landscape phones and small tablets: the send bar stays clear of the skill bar beside it. */
+@media (max-width: 960px) {
+  #hud-bottom .btn.rally .ico { display: inline-block; }
+  #hud-bottom .btn.rally > span, #hud-bottom .btn.auto span, .hud-label { display: none; }
+  #hud-bottom { max-width: calc(100vw - 420px); }
+}
+@media (max-width: 720px) { #hud-bottom { max-width: calc(100vw - 12px); } }

@@ -19,6 +19,7 @@
 // of the triangles). The silhouette and the marking panels are the same at all three.
 import { Model, F } from './iso.js';
 import { FACTIONS } from './factions.js';
+import { pick } from './modelset.js';
 
 const TAU = Math.PI * 2;
 const COPPER = '#b56a3a', WHITE_HOT = '#f3fbff', GUNMETAL = '#34383c', BORE = '#101214', RUBBER = '#1d1f21';
@@ -877,20 +878,25 @@ export function rosterList() {
  */
 export function unitSpec(f, sub, tier) {
   const u = rosterOf(f, sub, tier);
-  if (!u || u.kind === 'foot') return { id: u ? u.id : null, kind: 'foot', air: false, hover: 0, bob: 0, drift: 0, foot: [3, 3], ...FOOT_SPEC };
-  return { id: u.id, kind: u.kind, air: u.kind === 'air', hover: 0, bob: 0, drift: 0, foot: u.foot, ...u.spec };
+  const alt = pick('spec', f, sub, tier);                // an alternative model set may move the sockets with its models
+  if (!u || u.kind === 'foot') return { id: u ? u.id : null, kind: 'foot', air: false, hover: 0, bob: 0, drift: 0, foot: [3, 3], ...FOOT_SPEC, ...alt };
+  return { id: u.id, kind: u.kind, air: u.kind === 'air', hover: 0, bob: 0, drift: 0, foot: u.foot, ...u.spec, ...alt };
 }
 
 const PLAIN = { id: 'neutral', main: '#878c90', dark: '#4a4f54', light: '#c2c7cb' };
 const clampLod = lod => (lod === 0 || lod === 2 ? lod : 1);
 
 export function buildHull(f, sub, tier, tc = PLAIN, lod = 1) {
+  const alt = pick('hull', f, sub, tier, tc, clampLod(lod));
+  if (alt) return alt;
   const m = new Unit(), u = rosterOf(f, sub, tier);
   u.hull(m, tc, FACTIONS[f].mat, clampLod(lod));
   return m;
 }
 
 export function buildTurret(f, sub, tier, tc = PLAIN, lod = 1) {
+  const alt = pick('turret', f, sub, tier, tc, clampLod(lod));
+  if (alt) return alt;
   const m = new Unit(), u = rosterOf(f, sub, tier);
   u.turret(m, tc, FACTIONS[f].mat, clampLod(lod));
   return m;
@@ -1053,6 +1059,8 @@ const SOLDIER3D = {
 
 /** One walk frame of an infantry figure as a 3D model. frame: 0..3. */
 export function buildSoldier(f, sub, tc = PLAIN, frame = 0, lod = 1) {
+  const alt = pick('soldier', f, sub, tc, frame & 3, clampLod(lod));
+  if (alt) return alt;
   const m = new Unit(), u = rosterOf(f, sub, 1);
   SOLDIER3D[u.id](m, tc, FACTIONS[f].mat, [0, 1, 0, -1][frame & 3], clampLod(lod));
   return m;
@@ -1060,6 +1068,8 @@ export function buildSoldier(f, sub, tc = PLAIN, frame = 0, lod = 1) {
 
 /** Where an infantry weapon fires from, relative to the sprite anchor. */
 export function soldierMuzzle(f, sub, dx, dy) {
+  const alt = pick('muzzle', f, sub, dx, dy);
+  if (alt) return alt;
   if (f === 'veil' && sub === 'dominion') return [dx * 3 - dy * 2.4, -19.6];
   if (f === 'iron' && sub === 'volt') return [dx * 4.6, -8.8 + dy * 2];
   if (f === 'meridian' && sub === 'aegis') return [dx * 7, -12.4 + dy * 2.8];

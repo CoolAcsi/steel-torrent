@@ -27,6 +27,12 @@ const saw = (ctx, k, f) => ctx.ev.some(e => e.k === k && (!f || f(e)));
 const did = (ctx, what, node) => ctx.did.some(d => d.did === what && (node == null || d.node === node));
 const empOf = (g, kind) => g.emps.some(e => e.owner === ME && e.kind === kind);
 const obstOf = (g, kind) => g.obst.some(o => o.owner === ME && o.kind === kind);
+/** Give one of the player's bases exactly `n` soldiers of its own first tier (a scripted reset between steps). */
+const setGarrison = (g, id, n) => {
+  const c = g.nodes[id], p = g.players[c.owner];
+  if (!p) return;
+  c.groups = [makeGroup(p.faction, p.sub, 1, n)];
+};
 const foeColumn = (g, from, to, n, s, o = {}) => {
   const p = g.players[FOE];
   const a = g.newArmy(FOE, from, to, [makeGroup(p.faction, p.sub, o.tier || 1, n)], s);
@@ -147,11 +153,24 @@ const LESSONS = [null,
     names: { A: 0, B: 1, F: 2 },
     map: [[190, 320, ME, 2, 30], [800, 320, ME, 1, 8], [800, 540, FOE, 1, 12]],
     roads: [[0, 1], [1, 2]],
+    // In the two steps about a single column it marches at a walk, so there is time to point at it.
+    tick(g, ctx, sess) {
+      if (!g.walkable) { const base = g.baseSpeed.bind(g); g.baseSpeed = a => base(a) * (g.walk && a.owner === ME ? 0.35 : 1); g.walkable = true; }
+      g.walk = sess.step >= 2;
+    },
     steps: [
       { key: 'on', at: ['A', 'B'], hud: ['#btn-auto'], check: g => [...g.autos.values()].some(o => o.src === 0 && o.owner === ME) },
-      { key: 'off', at: ['A'], roads: [['A', 'B']], hud: ['#btn-auto-stop'], check: (g, ctx) => ![...g.autos.values()].some(o => o.src === 0) && ctx.msgs.some(m => m.t === 'auto' && m.off) },
-      { key: 'halt', at: ['A', 'B'], roads: [['A', 'B']], check: (g, ctx) => saw(ctx, 'route', e => e.p === ME && e.why === 'held') },
-      { key: 'redirect', at: ['A', 'B'], check: (g, ctx) => saw(ctx, 'route', e => e.p === ME && e.why === 'new') },
+      { key: 'off', at: ['A'], roads: [['A', 'B']], hud: ['#btn-auto-stop'], check: (g, ctx) => ![...g.autos.values()].some(o => o.src === 0) && ctx.msgs.some(m => m.t === 'auto' && m.off),
+        // The next two steps are about single orders. What the route already delivered is taken
+        // off the board, so B has room again and A has troops to send, however long the route ran.
+        after(g) {
+          g.armies = g.armies.filter(a => a.owner !== ME);
+          setGarrison(g, 0, 30); setGarrison(g, 1, 8);
+        } },
+      // `mode: 'once'` has the client drop back to single dispatch: with Auto still on, a drag
+      // would make another persistent route, and there would be no marching order to cancel.
+      { key: 'halt', mode: 'once', at: ['A', 'B'], roads: [['A', 'B']], hud: ['#btn-auto'], check: (g, ctx) => saw(ctx, 'route', e => e.p === ME && e.why === 'held') },
+      { key: 'redirect', mode: 'once', at: ['A', 'B'], check: (g, ctx) => saw(ctx, 'route', e => e.p === ME && e.why === 'new') },
     ],
   }] },
 
@@ -300,6 +319,7 @@ function firstOpen(sess) {
 function begin(sess, n, part = 0) {
   const def = LESSONS[n], P = def.parts[part];
   sess.n = n; sess.part = part; sess.step = 0; sess.def = def; sess.done = false;
+  sess.run = (sess.run || 0) + 1;                // every (re)start is a new run: the client forgets what it reported in the last one
   sess.roster = P.roster || sess.pref;
   sess.foe = typeof P.foe === 'function' ? P.foe(sess) : P.foe || FOE_ROSTER;
   const xs = P.map.map(p => p[0]), ys = P.map.map(p => p[1]);
@@ -405,10 +425,10 @@ function message(sess) {
   const failed = sess.failed;
   sess.failed = false;
   return {
-    t: 'lesson', n: sess.n, of: TOTAL, id: def.id, part: sess.part + 1, parts: parts.length,
+    t: 'lesson', n: sess.n, of: TOTAL, id: def.id, part: sess.part + 1, parts: parts.length, run: sess.run,
     step: sess.done ? total : before + sess.step + 1, total,
     key: sess.done ? `tutorial.l${sess.n}.done` : `tutorial.l${sess.n}.${parts.length > 1 ? `p${sess.part + 1}_` : ''}${step.key}`,
-    want: step ? step.want : undefined, hi, done: sess.done || undefined,
+    want: step ? step.want : undefined, mode: step ? step.mode : undefined, hi, done: sess.done || undefined,
     all: sess.prog.done.size >= TOTAL || undefined, failed: failed || undefined,
     pick: def.pick ? Object.keys(FACTIONS) : undefined, faction: sess.roster[0], sub: sess.roster[1],
     prog: { done: [...sess.prog.done].sort((a, b) => a - b), skipped: [...sess.prog.skipped].sort((a, b) => a - b) },

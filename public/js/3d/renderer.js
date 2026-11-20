@@ -35,7 +35,7 @@ import { Model } from '../iso.js';
 import { mergeGeometries } from '../../vendor/three/addons/utils/BufferGeometryUtils.js';
 import { F } from '../iso.js';
 import { modelBuckets, SURFACES } from './meshdata.js';
-import { surfaceTextures } from './textures.js';
+import { surfaceTextures, groundTexture } from './textures.js';
 import { facadeTextures, towerParts, LOOK_COUNT } from './facade.js';
 
 const VLEN = Math.hypot(1, F);
@@ -93,16 +93,64 @@ export const LOOKS = {
     glow: 1.25, warm: [1.2, 0.95, 0.64], bloom: 0.16, bloomAt: 1.06, windows: 1.4, wetDark: 0.3, mirror: 1.4, groundSat: 0.7,
     grade: { sat: 1.0, contrast: 1.08, shadow: [0.95, 1.0, 1.06], light: [1.03, 1.0, 0.96], vig: 0.16, sharp: 0.45, ink: 0 } },
 };
+// Inspection: a neutral white key light and grey ambient, no haze, no grading, no weathering
+// overlay, no bloom, a dry ground. For judging what a material is by itself (?look=inspect).
+LOOKS.inspect = { neutral: true, exposure: 1.0, sun: 1.5, sunCol: 0xffffff, hemi: 0.6, env: 0.7, detail: 1, roughK: 1, relief: 1, sat: 1, rim: 0, grime: 0, wear: 1,
+  glow: 1.05, warm: [1, 1, 1], bloom: 0, bloomAt: 4, windows: 1, wetDark: 0, mirror: 0, groundSat: 1,
+  grade: { sat: 1, contrast: 1, shadow: [1, 1, 1], light: [1, 1, 1], vig: 0, sharp: 0, ink: 0 } };
 export const DEFAULT_LOOK = 'field';
 
-const ATLAS_GRID = 4, ATLAS_CELL = 256, ATLAS_PAD = 8;   // surface atlas: cells per side, cell size and wrapped border in pixels
+/**
+ * Weather, laid over the look: the look says how surfaces are treated, the weather says what
+ * sky they stand under. Numbers multiply the look's own value unless noted; 'rain' is the sky
+ * every look was made for and changes nothing. Set with the `weather` option or setWeather().
+ *   exposure, sun, hemi, env   light balance (times the look's)
+ *   sunCol, sky, gnd           colour of the key light and of the sky / ground ambient (replace)
+ *   sunDir                     direction toward the key light (replace): lower = longer shadows
+ *   shadowR                    softness of the shadow edge (replace; 3 under rain)
+ *   fog, fogAmt, mirrorSky     haze colour (sRGB), how much of it at the far edge of the field, and
+ *                              what a puddle shows where nothing stands over it (replace)
+ *   glow, windows, bloom       lamps, lit windows and their spill (times); bloomAt is added to the threshold
+ *   wetDark, mirror, groundSat, grime, rim   as in LOOKS (times). mirror 0 also skips the reflection pass
+ *   snow                       0..1: snow lying on whatever faces up (roofs, crowns, decks; paint keeps its colour)
+ *   lamp                       light the street lamps throw on the ground, beyond what is painted
+ *   uplight                    lamp light caught by the lower part of everything standing on the ground
+ *   grade                      sat, contrast, shadow, light (times), vig (added)
+ */
+export const WEATHER = {
+  rain: { exposure: 1, sun: 1, sunCol: null, sky: null, gnd: null, sunDir: null, shadowR: 3, hemi: 1, env: 1,
+    fog: [0.66, 0.714, 0.77], fogAmt: 0.3, mirrorSky: [0.5, 0.55, 0.61], glow: 1, windows: 1, bloom: 1, bloomAt: 0,
+    wetDark: 1, mirror: 1, groundSat: 1, grime: 1, rim: 1, snow: 0, lamp: 0, uplight: 0,
+    grade: { sat: 1, contrast: 1, shadow: [1, 1, 1], light: [1, 1, 1], vig: 0 } },
+  // Snow: a bright, flat, white overcast. Weak key light with soft shadows, strong ambient lifted by
+  // the white ground, cool white haze, nothing mirrors; lamps and windows stay warm against it.
+  snow: { exposure: 0.92, sun: 0.62, sunCol: 0xf1f5ff, sky: 0xdfe8f4, gnd: 0x9aa5b4, sunDir: null, shadowR: 5, hemi: 1.4, env: 1,
+    fog: [0.84, 0.88, 0.93], fogAmt: 0.46, mirrorSky: [0.8, 0.84, 0.9], glow: 1.05, windows: 1.1, bloom: 1, bloomAt: 0.1,
+    wetDark: 0.4, mirror: 0, groundSat: 1, grime: 0.7, rim: 1.2, snow: 1, lamp: 0, uplight: 0,
+    grade: { sat: 0.96, contrast: 0.98, shadow: [0.95, 1, 1.07], light: [1, 1, 1.02], vig: -0.06 } },
+  // Sun: a clear warm key light from lower in the sky (crisp, longer shadows), blue sky ambient
+  // in the shade, dry ground that mirrors nothing, hardly any haze; lamps and windows barely show.
+  sun: { exposure: 1, sun: 1.75, sunCol: 0xfff3dc, sky: 0xb9d2f5, gnd: 0x6a6456, sunDir: [-0.72, 0.52, 0.4], shadowR: 1.6, hemi: 1.15, env: 0.8,
+    fog: [0.78, 0.84, 0.9], fogAmt: 0.08, mirrorSky: [0.6, 0.7, 0.84], glow: 0.5, windows: 0.15, bloom: 0.6, bloomAt: 0.1,
+    wetDark: 0, mirror: 0, groundSat: 1.15, grime: 0.8, rim: 1, snow: 0, lamp: 0, uplight: 0,
+    grade: { sat: 1.08, contrast: 1.04, shadow: [0.96, 1, 1.06], light: [1.04, 1, 0.94], vig: -0.06 } },
+  // Night: dark blue ambient and a weak moon for a key light; lamp pools, lit windows and every
+  // glowing part carry the scene, the wet street mirrors them, and they spill more.
+  night: { exposure: 1, sun: 0.2, sunCol: 0x9db8ff, sky: 0x4a66a8, gnd: 0x161c2a, sunDir: null, shadowR: 4, hemi: 0.9, env: 0.3,
+    fog: [0.035, 0.05, 0.09], fogAmt: 0.36, mirrorSky: [0.1, 0.13, 0.21], glow: 1.5, windows: 2.1, bloom: 2.1, bloomAt: -0.1,
+    wetDark: 1.1, mirror: 1.1, groundSat: 1, grime: 1, rim: 1.6, snow: 0, lamp: 1, uplight: 0.5,
+    grade: { sat: 1, contrast: 1.05, shadow: [0.9, 0.97, 1.14], light: [1.03, 1, 0.97], vig: 0.1 } },
+};
+export const DEFAULT_WEATHER = 'rain';
+
+const ATLAS_GRID = 4;                               // surface atlas: cells per side (each holds one material and a wrapped border)
 const GLOW = 1.05;                                  // how far above white a light source is drawn: enough to read as lit, not enough to flood
 
 export class Renderer3D {
   /**
    * @param canvas
-   * @param opts { shadowSize, ao, bloom, reflections, look,
-   *               figures: { exact, group, cap } - how many figures stand for an army (see figuresFor in art.js) }
+   * @param opts { shadowSize, ao, bloom, reflections, look, weather,
+   *               figures: { batch, cap } - how many figures stand for an army (see figuresFor in art.js) }
    */
   constructor(canvas, opts = {}) {
     this.canvas = canvas;
@@ -119,7 +167,11 @@ export class Renderer3D {
     canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); this.lost = true; });
 
     const scene = this.scene = new THREE.Scene();
-    scene.background = FOG;
+    this.fogC = FOG.clone();                          // haze and backdrop, and what puddles show of the sky: set by the weather
+    this.mirrorSky = MIRROR_SKY.clone();
+    this.fogAmt = 0.3;
+    this.sunDir = SUN.clone();
+    scene.background = this.fogC;
     scene.fog = new THREE.Fog(FOG, 0, 1);
     this.world = new THREE.Group();                   // everything that stands on the ground and is mirrored in it
     scene.add(this.world);
@@ -179,43 +231,64 @@ export class Renderer3D {
     this.groundTex = new THREE.CanvasTexture(document.createElement('canvas'));
     this.groundTex.colorSpace = THREE.SRGBColorSpace;
     this.wetTex = new THREE.CanvasTexture(document.createElement('canvas'));
+    this.lampTex = new THREE.CanvasTexture(document.createElement('canvas'));      // where lamp light falls on the ground (night)
+    this.matTex = new THREE.CanvasTexture(document.createElement('canvas'));       // what the ground is made of: asphalt, grass, brick (else stone)
     this.groundTex.anisotropy = this.wetTex.anisotropy = this.maxAniso;
     // Treatment of surfaces and ground, shared by their shaders and set by setLook().
-    this.uLook = { uDetail: { value: 1 }, uRoughK: { value: 1 }, uSat: { value: 1 }, uRim: { value: 0 }, uGrime: { value: 0 },
-      uWetDark: { value: 0 }, uMirror: { value: 1 }, uGroundSat: { value: 1 } };
+    this.uLook = { uDetail: { value: 1 }, uRoughK: { value: 1 }, uSat: { value: 1 }, uRim: { value: 0 }, uGrime: { value: 0 }, uWear: { value: 1 },
+      uWetDark: { value: 0 }, uMirror: { value: 1 }, uGroundSat: { value: 1 },
+      uSnow: { value: 0 }, uLamp: { value: 0 }, uUplight: { value: 0 } };              // the last three belong to the weather
     const quad = new THREE.BufferGeometry();
     quad.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1], 3));
     quad.setAttribute('normal', new THREE.Float32BufferAttribute([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0], 3));
     quad.setAttribute('uv', new THREE.Float32BufferAttribute([0, 1, 1, 1, 0, 0, 1, 0], 2));        // far edge = top of the painting
     quad.setIndex([0, 2, 1, 1, 2, 3]);
     const gm = new THREE.MeshStandardMaterial({ map: this.groundTex, roughness: 1, metalness: 0 });
-    // Fine surface detail, tiled in world space over the painting at two scales: the painting
-    // says what the ground is (asphalt, paving, yard), this gives it grit and relief.
-    const GD = surfaceTextures('ground');
-    const detail = cv => { const t = new THREE.CanvasTexture(cv); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = this.maxAniso; return t; };
-    const tDetail = detail(GD.albedo), tDetailN = detail(GD.normal);
+    // What each kind of ground is made of, tiled in world space over the painting: the painting
+    // says where the road, the flags, the brick and the lawn are (and `tMat` repeats it as a
+    // mask); these give each its own grain, relief and response to light.
+    const gtex = name => {
+      const S = 256, src = groundTexture(name, S), data = new Uint8Array(src.length);
+      for (let y = 0; y < S; y++) data.set(src.subarray((S - 1 - y) * S * 4, (S - y) * S * 4), y * S * 4);      // rows bottom-up, as the GPU wants them
+      const t = new THREE.DataTexture(data, S, S, THREE.RGBAFormat, THREE.UnsignedByteType);
+      t.wrapS = t.wrapT = THREE.RepeatWrapping; t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter;
+      t.anisotropy = this.maxAniso; t.needsUpdate = true;
+      return t;
+    };
+    const tGA = gtex('g_asphalt'), tGS = gtex('g_stone'), tGB = gtex('g_brick'), tGG = gtex('g_grass');
     gm.onBeforeCompile = sh => {
-      Object.assign(sh.uniforms, this.uLook, { tWet: { value: this.wetTex }, tReflect: { value: this.reflRT.texture }, uRes: this.uRes, uReflectK: this.uReflectK, tDetail: { value: tDetail }, tDetailN: { value: tDetailN } });
+      Object.assign(sh.uniforms, this.uLook, { tWet: { value: this.wetTex }, tLamp: { value: this.lampTex }, tMat: { value: this.matTex }, tReflect: { value: this.reflRT.texture }, uRes: this.uRes, uReflectK: this.uReflectK,
+        tGA: { value: tGA }, tGS: { value: tGS }, tGB: { value: tGB }, tGG: { value: tGG } });
       sh.vertexShader = sh.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec2 vGround;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGround = ( modelMatrix * vec4( transformed, 1.0 ) ).xz;');
       sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>', '#include <common>\nuniform sampler2D tWet;\nuniform sampler2D tReflect;\nuniform sampler2D tDetail;\nuniform sampler2D tDetailN;\nuniform vec2 uRes;\nuniform float uReflectK;\nuniform float uWetDark;\nuniform float uMirror;\nuniform float uGroundSat;\nvarying vec2 vGround;')
+        .replace('#include <common>', '#include <common>\nuniform sampler2D tWet;\nuniform sampler2D tLamp;\nuniform sampler2D tMat;\nuniform sampler2D tReflect;\nuniform sampler2D tGA;\nuniform sampler2D tGS;\nuniform sampler2D tGB;\nuniform sampler2D tGG;\nuniform vec2 uRes;\nuniform float uReflectK;\nuniform float uWetDark;\nuniform float uMirror;\nuniform float uGroundSat;\nuniform float uSnow;\nuniform float uLamp;\nuniform float uDetail;\nvarying vec2 vGround;')
         .replace('#include <map_fragment>', `#include <map_fragment>
-          float detA = texture2D( tDetail, vGround / 52.0 ).g, detB = texture2D( tDetail, vGround / 15.0 + 0.37 ).g;
-          diffuseColor.rgb *= mix( 1.0, detA * detB * 1.42, 0.62 );
+          vec3 gMat = texture2D( tMat, vMapUv ).rgb;                               // asphalt, grass, brick
+          float gStone = clamp( 1.0 - gMat.r - gMat.g - gMat.b, 0.0, 1.0 );
+          vec2 gTurn = vec2( vGround.x + vGround.y, vGround.y - vGround.x ) * 0.7071;   // the paving grid lies at 45 degrees
+          // r = tone, g = roughness, ba = normal
+          vec4 gDet = texture2D( tGA, vGround / 30.0 ) * gMat.r + texture2D( tGG, vGround / 22.0 ) * gMat.g + texture2D( tGB, gTurn / 26.0 ) * gMat.b + texture2D( tGS, gTurn / 38.0 ) * gStone;
+          float gBig = texture2D( tGS, vGround / 211.0 + 0.37 ).r;                   // the same stone read very large: districts weather differently
+          // lying snow is smooth: the grit of the paving under it only just shows
+          float snowK = uSnow * smoothstep( 0.42, 0.68, min( diffuseColor.r, min( diffuseColor.g, diffuseColor.b ) ) );
+          diffuseColor.rgb *= mix( 1.0, gDet.r * 1.2 * ( 0.9 + 0.24 * ( gBig - 0.42 ) / 0.42 ), min( 1.0, 0.85 * uDetail ) * ( 1.0 - 0.8 * snowK ) );
           { float gl = dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
             diffuseColor.rgb = max( vec3( 0.0 ), mix( vec3( gl ), diffuseColor.rgb, uGroundSat ) ) * ( 1.0 - uWetDark * texture2D( tWet, vMapUv ).r ); }`)
-        // Roughness from the wetness map (puddles are mirrors, dry stone is matt), broken up by the grit.
-        .replace('#include <roughnessmap_fragment>', 'float wetK = texture2D( tWet, vMapUv ).r;\nfloat roughnessFactor = clamp( mix( 0.95, 0.10, wetK * wetK ) + ( 0.84 - detB ) * 0.9, 0.06, 1.0 );')
+        // Roughness from the wetness map (puddles are mirrors, dry stone is matt) and from the material itself.
+        .replace('#include <roughnessmap_fragment>', 'float wetK = texture2D( tWet, vMapUv ).r;\nfloat roughnessFactor = clamp( mix( gDet.g, 0.10, wetK * wetK ) + ( gDet.g - 0.85 ) * 0.5, 0.06, 1.0 );')
         .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
-          vec2 dnA = texture2D( tDetailN, vGround / 52.0 ).xy * 2.0 - 1.0, dnB = texture2D( tDetailN, vGround / 15.0 + 0.37 ).xy * 2.0 - 1.0;
-          vec2 dn = ( dnA + dnB ) * mix( 0.5, 0.16, wetK );              // standing water lies flat over the relief
+          vec2 dn = ( gDet.ba * 2.0 - 1.0 ) * mix( 1.0, 0.25, wetK ) * ( 1.0 - 0.6 * snowK );   // standing water lies flat over the relief, and so does snow
+          dn = mix( dn, vec2( dn.x - dn.y, dn.x + dn.y ) * 0.7071, gMat.b + gStone );             // the turned materials' relief, turned back
           normal = normalize( ( viewMatrix * vec4( normalize( vec3( dn.x, 1.0, dn.y ) ), 0.0 ) ).xyz );`)
         // The mirrored scene, blurrier where the ground is less wet, laid over the lit ground.
         .replace('#include <opaque_fragment>', `
           vec3 mirror = textureLod( tReflect, gl_FragCoord.xy / uRes + dn * 0.004, 0.4 + ( 1.0 - wetK ) * 4.5 ).rgb;
           outgoingLight = mix( outgoingLight, mirror, min( 0.95, uReflectK * smoothstep( 0.3, 1.0, wetK ) * 0.62 * uMirror ) );
+          // Lamp light on the ground (tLamp says where the pools are): the painting carries it
+          // by day, at night it has to shine on its own.
+          if ( uLamp > 0.0 ) { float lampK = texture2D( tLamp, vMapUv ).r; outgoingLight += uLamp * lampK * lampK * vec3( 1.0, 0.6, 0.27 ) * ( 0.1 + diffuseColor.rgb * 2.4 ); }
           #include <opaque_fragment>`);
     };
     this.ground = new THREE.Mesh(quad, gm);
@@ -278,37 +351,66 @@ export class Renderer3D {
       const nav = performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
       look = look || new URLSearchParams(location.search).get('look') || (nav && new URL(nav.name).searchParams.get('look'));
     } catch { /* no address to read */ }
+    this.weather = WEATHER[this.opts.weather] ? this.opts.weather : DEFAULT_WEATHER;
     this.setLook(look);
   }
 
   /** Switch treatment (see LOOKS). Takes effect on the next frame; nothing is rebuilt. */
   setLook(name) {
     this.look = LOOKS[name] ? name : DEFAULT_LOOK;
-    const L = LOOKS[this.look];
-    this.lookDef = L;
-    this.renderer.toneMappingExposure = L.exposure;
-    this.sun.intensity = L.sun; this.sun.color.set(L.sunCol);
-    this.hemi.intensity = L.hemi;
-    this.scene.environmentIntensity = L.env;
-    this.bloom.strength = L.bloom; this.bloom.threshold = L.bloomAt;
+    this.lookDef = LOOKS[this.look];
+    this.applyLook();
+  }
+
+  /**
+   * Switch the sky the scene stands under: 'rain' (the default), 'snow', 'sun' or 'night' (see
+   * WEATHER). Light, fog, wetness, glow and grade change on the next frame; nothing is rebuilt.
+   * The ground painting is the caller's: repaint it for the same weather (buildTerrain's
+   * `weather`) and hand it over with setGround() to get its snow cover or dry paving.
+   */
+  setWeather(name) {
+    this.weather = WEATHER[name] ? name : DEFAULT_WEATHER;
+    this.applyLook();
+  }
+
+  /** The look under the current weather, written to lights, materials and passes. */
+  applyLook() {
+    const L = this.lookDef, K = L.neutral ? WEATHER.rain : WEATHER[this.weather], KG = K.grade;   // inspection light ignores the weather
+    this.renderer.toneMappingExposure = L.exposure * K.exposure;
+    this.sun.intensity = L.sun * K.sun; this.sun.color.set(K.sunCol === null ? L.sunCol : K.sunCol);
+    this.sun.shadow.radius = K.shadowR;
+    if (K.sunDir) this.sunDir.set(...K.sunDir).normalize(); else this.sunDir.copy(SUN);
+    this.hemi.intensity = L.hemi * K.hemi;
+    this.skyC.set(L.neutral ? 0xd8d8d8 : K.sky === null ? 0xc6d4e6 : K.sky); this.gndC.set(L.neutral ? 0x6c6c6c : K.gnd === null ? 0x4c5158 : K.gnd);
+    this.hemi.color.copy(this.skyC); this.hemi.groundColor.copy(this.gndC);
+    this.scene.environmentIntensity = L.env * K.env;
+    this.fogC.setRGB(...K.fog, THREE.SRGBColorSpace); this.scene.fog.color.copy(this.fogC);
+    this.mirrorSky.setRGB(...K.mirrorSky, THREE.SRGBColorSpace);
+    this.fogAmt = L.neutral ? 0.0001 : K.fogAmt;
+    this.bloom.strength = L.bloom * K.bloom; this.bloom.threshold = L.bloomAt + K.bloomAt;
     const u = this.uLook;
-    u.uDetail.value = L.detail; u.uRoughK.value = L.roughK; u.uSat.value = L.sat; u.uRim.value = L.rim; u.uGrime.value = L.grime;
-    u.uWetDark.value = L.wetDark; u.uMirror.value = L.mirror; u.uGroundSat.value = L.groundSat;
-    if (this.surfMat) { this.surfMat.normalScale.set(L.relief, L.relief); this.glowMat.color.setRGB(L.warm[0] * L.glow, L.warm[1] * L.glow, L.warm[2] * L.glow); }
-    for (const m of this.facades || []) { m.emissiveIntensity = L.windows; m.emissive.setRGB(...L.warm); }
-    const g = this.grade.uniforms;
-    g.uSat.value = L.grade.sat; g.uContrast.value = L.grade.contrast; g.uShadow.value.set(...L.grade.shadow); g.uLight.value.set(...L.grade.light);
-    g.uVig.value = L.grade.vig; g.uSharp.value = L.grade.sharp; g.uInk.value = L.grade.ink;
-    this.grade.enabled = L !== LOOKS.current;
+    u.uDetail.value = L.detail; u.uRoughK.value = L.roughK; u.uSat.value = L.sat; u.uRim.value = L.rim * K.rim; u.uGrime.value = L.grime * K.grime; u.uWear.value = L.wear == null ? 1 : L.wear;
+    u.uWetDark.value = L.wetDark * K.wetDark; u.uMirror.value = L.mirror * K.mirror; u.uGroundSat.value = L.groundSat * K.groundSat;
+    u.uSnow.value = K.snow; u.uLamp.value = K.lamp; u.uUplight.value = K.uplight;
+    const glow = L.glow * K.glow;
+    if (this.surfMat) { this.surfMat.normalScale.set(L.relief, L.relief); this.glowMat.color.setRGB(L.warm[0] * glow, L.warm[1] * glow, L.warm[2] * glow); }
+    for (const m of this.facades || []) { m.emissiveIntensity = L.windows * K.windows; m.emissive.setRGB(...L.warm); }
+    const g = this.grade.uniforms, G = L.grade;
+    g.uSat.value = G.sat * KG.sat; g.uContrast.value = G.contrast * KG.contrast;
+    g.uShadow.value.set(G.shadow[0] * KG.shadow[0], G.shadow[1] * KG.shadow[1], G.shadow[2] * KG.shadow[2]);
+    g.uLight.value.set(G.light[0] * KG.light[0], G.light[1] * KG.light[1], G.light[2] * KG.light[2]);
+    g.uVig.value = Math.max(0, G.vig + KG.vig); g.uSharp.value = G.sharp; g.uInk.value = G.ink;
+    this.grade.enabled = !L.neutral && (L !== LOOKS.current || this.weather !== DEFAULT_WEATHER);
   }
 
   /** Figures that stand for an army of n soldiers with tier counts [n1, n2, n3], under this renderer's options. Drawing only. */
   figuresFor(n, tiers) { return figuresFor(n, tiers, this.opts.figures); }
 
-  /** Change what the preset allows: { shadowSize, ao, bloom, reflections, figures }. */
+  /** Change what the preset allows: { shadowSize, ao, bloom, reflections, figures }, and optionally the `weather`. */
   configure(o) {
     if (o && o.figures) o = { ...o, figures: { ...this.opts.figures, ...o.figures } };
     Object.assign(this.opts, o);
+    if (o && o.weather && this.lookDef && o.weather !== this.weather) this.setWeather(o.weather);
     const s = this.sun.shadow;
     if (s.mapSize.x !== this.opts.shadowSize) {
       s.mapSize.set(this.opts.shadowSize, this.opts.shadowSize);
@@ -337,9 +439,12 @@ export class Renderer3D {
     this.grade.uniforms.uRes.value.set(w, h);   // a pass keeps its own copy of its uniforms
   }
 
-  /** The painted terrain (a canvas the size of the screen, in device pixels) and its wetness map. */
+  /**
+   * The painted terrain (a canvas the size of the screen, in device pixels) and its wetness map;
+   * `wet.lamps`, when the painter left one, is the map of lamp light on the ground.
+   */
   setGround(source, wet) {
-    for (const [tex, img] of [[this.groundTex, source], [this.wetTex, wet]]) {
+    for (const [tex, img] of [[this.groundTex, source], [this.wetTex, wet], [this.lampTex, wet && wet.lamps], [this.matTex, wet && wet.mat]]) {
       if (!img) continue;
       if (tex.image !== img || tex.image.width !== tex.w || tex.image.height !== tex.h) tex.dispose();   // size changed: new storage
       tex.image = img; tex.w = img.width; tex.h = img.height;
@@ -359,6 +464,9 @@ export class Renderer3D {
     this.props.clear();
     this.sceneryMaterials();
     this.buildScenery(s);
+    // Scenery built from the game's own Models (see props.js): drawn through the same surface
+    // material, instancing, shadows and mirror as bases and units. [{ key, build, x, y, yaw, scale }]
+    this.staticProps = s.props || [];
   }
 
   /** Materials of the static scenery (office facades, plain trim, trees): made once, on first need. */
@@ -381,6 +489,21 @@ export class Renderer3D {
       this.plainMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78, metalness: 0.05 });
       this.treeMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0, flatShading: true });
       this.treeGeo = treeGeometries();
+      // Snow settles on whatever faces up: roofs, ledges, the tops of crowns. Nothing is lit under it.
+      for (const m of [...this.facades, this.plainMat, this.treeMat]) {
+        m.onBeforeCompile = sh => {
+          sh.uniforms.uSnow = this.uLook.uSnow;
+          sh.fragmentShader = sh.fragmentShader
+            .replace('#include <common>', '#include <common>\nuniform float uSnow;')
+            .replace('#include <lights_physical_fragment>', `if ( uSnow > 0.0 ) {
+                float cover = uSnow * smoothstep( 0.45, 0.8, dot( normal, normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz ) ) );
+                diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.84, 0.88, 0.93 ), cover );
+                roughnessFactor = mix( roughnessFactor, 0.92, cover ); metalnessFactor *= 1.0 - cover; totalEmissiveRadiance *= 1.0 - cover;
+              }
+              #include <lights_physical_fragment>`);
+        };
+        m.customProgramCacheKey = () => 'snow-cap';
+      }
     }
   }
 
@@ -393,6 +516,7 @@ export class Renderer3D {
     const AWNING = ['#6f3a34', '#2f5648', '#7d7038', '#39496f'];
     const turn = new THREE.Matrix4();
     for (const t of s.towers || []) {
+      if (t.prop) continue;                                                  // a plot that is not a tower: drawn from its Model (s.props)
       turn.makeRotationY(Math.PI / 4).setPosition(t.x, 0, t.y / F);          // faces line up with the paving
       for (const p of towerParts(t).parts) {
         const h = p.y1 - p.y0;
@@ -443,53 +567,60 @@ export class Renderer3D {
   }
 
   /**
-   * Every surface type in ONE material. The procedural textures of all surfaces are packed
-   * into three atlases (colour detail, roughness + metalness, relief); each vertex carries
-   * the atlas cell of its surface, and the shader tiles the texture inside that cell. A tank
-   * made of painted plate, bare steel, rubber track and glass is therefore one draw call, not
-   * four, and painted armour, exposed steel, concrete, rubber and fabric still each answer the
-   * light in their own way.
+   * Every surface type in ONE material. The authored materials of all surfaces (textures.js) are
+   * packed into three atlases:
+   *   colour   base colour, with `paint` in alpha: how much of the face colour applies there
+   *   orm      ambient occlusion, roughness, metalness, and the material's chip pattern in alpha
+   *   normal   relief
+   * Each vertex carries the atlas cell of its surface and the shader tiles the material inside
+   * that cell, so a tank of painted plate, blackened steel, rubber-padded track and glass is one
+   * draw call. What the shader adds is only what a tile cannot know: where the edges of the
+   * object are. Along outside corners the paint is broken up by the material's own chip pattern
+   * down to what is underneath (steel under armour paint, pale stone under a concrete arris);
+   * in creases against another part or the ground, dirt collects.
    */
   surfaceMaterial() {
     if (this.surfMat) return this.surfMat;
     const names = Object.keys(SURFACES);
-    const size = ATLAS_GRID * ATLAS_CELL, inner = ATLAS_CELL - 2 * ATLAS_PAD;
-    const mk = () => { const c = document.createElement('canvas'); c.width = c.height = size; return c; };
-    const A = mk(), O = mk(), N = mk();
-    const a = A.getContext('2d'), o = O.getContext('2d', { willReadFrequently: true }), n = N.getContext('2d', { willReadFrequently: true });
-    a.fillStyle = '#fff'; a.fillRect(0, 0, size, size);
-    o.fillStyle = 'rgb(255,200,0)'; o.fillRect(0, 0, size, size);
-    n.fillStyle = 'rgb(128,128,255)'; n.fillRect(0, 0, size, size);
+    const T = this.opts.texSize === 512 ? 512 : 256, pad = T / 32, cell = T + 2 * pad, size = ATLAS_GRID * cell;
+    const A = new Uint8Array(size * size * 4), O = new Uint8Array(size * size * 4), N = new Uint8Array(size * size * 4);
     this.tiles = {};
+    const wearP = [], wearC = [];
+    for (let i = 0; i < ATLAS_GRID * ATLAS_GRID; i++) { wearP.push(new THREE.Vector4(0, 0, 1, 0)); wearC.push(new THREE.Vector3(0.5, 0.5, 0.5)); }
     names.forEach((name, i) => {
       const S = SURFACES[name], col = i % ATLAS_GRID, row = Math.floor(i / ATLAS_GRID);
-      const x = col * ATLAS_CELL, y = row * ATLAS_CELL;
       this.tiles[name] = [col, ATLAS_GRID - 1 - row];                    // cell origin in texture space (v runs upward)
-      const T = S.tex ? surfaceTextures(S.tex) : null;
-      // Each cell holds one repeat of the texture plus a wrapped border, so filtering at the
-      // cell's edge reads the same texture, not its neighbour.
-      const fill = (ctx, img) => {
-        const pat = ctx.createPattern(img, 'repeat');
-        pat.setTransform(new DOMMatrix().translate(x + ATLAS_PAD, y + ATLAS_PAD).scale(inner / img.width));
-        ctx.fillStyle = pat; ctx.fillRect(x, y, ATLAS_CELL, ATLAS_CELL);
-      };
-      if (T) { fill(a, T.albedo); fill(o, T.rough); fill(n, T.normal); }
-      // roughness in green (the map varies around ~0.82 of the surface's own value), metalness in blue
-      const od = o.getImageData(x, y, ATLAS_CELL, ATLAS_CELL), d = od.data, k = S.rough / 0.82;
-      for (let q = 0; q < d.length; q += 4) { d[q + 1] = T ? Math.min(255, d[q + 1] * k) : S.rough * 255; d[q + 2] = S.metal * 255; d[q + 3] = 255; }
-      o.putImageData(od, x, y);
-      if (T && S.bump !== 1) {                                           // relief strength is per surface
-        const nd = n.getImageData(x, y, ATLAS_CELL, ATLAS_CELL), e = nd.data;
-        for (let q = 0; q < e.length; q += 4) { e[q] = 128 + (e[q] - 128) * S.bump; e[q + 1] = 128 + (e[q + 1] - 128) * S.bump; }
-        n.putImageData(nd, x, y);
+      const idx = col + (ATLAS_GRID - 1 - row) * ATLAS_GRID, W = S.wear;
+      wearP[idx].set(W[0], W[4], W[5], W[6]);
+      wearC[idx].set(Math.pow(W[1], 2.2), Math.pow(W[2], 2.2), Math.pow(W[3], 2.2));   // sRGB in the table, linear in the shader
+      const M = S.tex ? surfaceTextures(S.tex, T) : null;
+      // Each cell holds one repeat of the material plus a wrapped border, so filtering at the
+      // cell's edge reads the same material, not its neighbour. Rows are stored bottom-up.
+      for (let y = 0; y < cell; y++) {
+        const sy = (y - pad) & (T - 1), dy = size - 1 - (row * cell + y);
+        for (let x = 0; x < cell; x++) {
+          const q = (dy * size + col * cell + x) * 4, sq = (sy * T + ((x - pad) & (T - 1))) * 4;
+          if (M) {
+            A[q] = M.albedo[sq]; A[q + 1] = M.albedo[sq + 1]; A[q + 2] = M.albedo[sq + 2]; A[q + 3] = M.albedo[sq + 3];
+            O[q] = M.orm[sq]; O[q + 1] = M.orm[sq + 1]; O[q + 2] = M.orm[sq + 2]; O[q + 3] = M.orm[sq + 3];
+            N[q] = M.normal[sq]; N[q + 1] = M.normal[sq + 1]; N[q + 2] = M.normal[sq + 2]; N[q + 3] = 255;
+          } else {                                                       // a surface with no material of its own: plain, matt
+            A[q] = A[q + 1] = A[q + 2] = 236; A[q + 3] = 255;
+            O[q] = 255; O[q + 1] = 242; O[q + 2] = 0; O[q + 3] = 128;
+            N[q] = N[q + 1] = 128; N[q + 2] = 255; N[q + 3] = 255;
+          }
+        }
       }
     });
-    const tex = (cv, srgb) => {
-      const t = new THREE.CanvasTexture(cv);
+    const tex = (data, srgb) => {
+      const t = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
+      t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter;
       t.anisotropy = Math.min(4, this.maxAniso);
       if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+      t.needsUpdate = true;
       return t;
     };
+    this.atlas = { size, cell, T, bytes: Math.round(size * size * 4 * 3 * 4 / 3) };
     const orm = tex(O, false);
     const m = this.surfMat = new THREE.MeshStandardMaterial({
       vertexColors: true, map: tex(A, true), roughnessMap: orm, metalnessMap: orm, normalMap: tex(N, false),
@@ -500,48 +631,69 @@ export class Renderer3D {
       if (!src.includes(from)) throw new Error(`shader chunk ${chunk} changed: cannot place the surface atlas`);
       return src.replace(from, to);
     };
-    const frag = {
-      // colour detail: 1 = as painted, below 1 fades it toward a plain surface, above 1 deepens seams and grime
-      map_fragment: swap('map_fragment', 'texture2D( map, vMapUv )', 'atlasDetail( atlasTex( map, vMapUv ) )'),
-      roughnessmap_fragment: swap('roughnessmap_fragment', 'texture2D( roughnessMap, vRoughnessMapUv )', 'atlasTex( roughnessMap, vRoughnessMapUv )'),
-      metalnessmap_fragment: swap('metalnessmap_fragment', 'texture2D( metalnessMap, vMetalnessMapUv )', 'atlasTex( metalnessMap, vMetalnessMapUv )'),
-      normal_fragment_maps: swap('normal_fragment_maps', 'texture2D( normalMap, vNormalMapUv )', 'atlasTex( normalMap, vNormalMapUv )'),
-    };
+    const normalChunk = swap('normal_fragment_maps', 'texture2D( normalMap, vNormalMapUv )', 'atlasTex( normalMap, vNormalMapUv )');
+    this.uWear = { uWearP: { value: wearP }, uWearC: { value: wearC } };
     m.onBeforeCompile = sh => {
       sh.vertexShader = sh.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute vec2 tile;\nvarying vec2 vTile;\nvarying vec3 vModel;')
-        .replace('#include <uv_vertex>', '#include <uv_vertex>\nvTile = tile;\nvModel = position;');
-      Object.assign(sh.uniforms, this.uLook);
+        .replace('#include <common>', '#include <common>\nattribute vec2 tile;\nattribute vec4 edge;\nattribute vec4 edgeK;\nvarying vec2 vTile;\nvarying vec3 vModel;\nvarying vec4 vEdge;\nvarying vec4 vEdgeK;')
+        .replace('#include <uv_vertex>', '#include <uv_vertex>\nvTile = tile;\nvModel = position;\nvEdge = edge;\nvEdgeK = edgeK;');
+      Object.assign(sh.uniforms, this.uLook, this.uWear);
+      const need = chunk => { if (!sh.fragmentShader.includes(`#include <${chunk}>`)) throw new Error(`standard shader no longer includes ${chunk}`); return `#include <${chunk}>`; };
       let f = sh.fragmentShader.replace('#include <common>', `#include <common>
         varying vec2 vTile;
         varying vec3 vModel;
-        uniform float uDetail; uniform float uRoughK; uniform float uSat; uniform float uRim; uniform float uGrime;
+        varying vec4 vEdge;
+        varying vec4 vEdgeK;
+        uniform float uDetail; uniform float uRoughK; uniform float uSat; uniform float uRim; uniform float uGrime; uniform float uSnow; uniform float uUplight; uniform float uWear;
+        uniform vec4 uWearP[ ${ATLAS_GRID * ATLAS_GRID} ]; uniform vec3 uWearC[ ${ATLAS_GRID * ATLAS_GRID} ];
         float hash3( vec3 p ) { p = fract( p * 0.3183099 + 0.1 ); p *= 17.0; return fract( p.x * p.y * p.z * ( p.x + p.y + p.z ) ); }
         float noise3( vec3 x ) {
           vec3 i = floor( x ), f = fract( x ); f = f * f * ( 3.0 - 2.0 * f );
           return mix( mix( mix( hash3( i ), hash3( i + vec3( 1, 0, 0 ) ), f.x ), mix( hash3( i + vec3( 0, 1, 0 ) ), hash3( i + vec3( 1, 1, 0 ) ), f.x ), f.y ),
                       mix( mix( hash3( i + vec3( 0, 0, 1 ) ), hash3( i + vec3( 1, 0, 1 ) ), f.x ), mix( hash3( i + vec3( 0, 1, 1 ) ), hash3( i + vec3( 1, 1, 1 ) ), f.x ), f.y ), f.z );
         }
-        vec4 atlasDetail( vec4 c ) { return vec4( max( vec3( 0.03 ), mix( vec3( 1.0 ), c.rgb, uDetail ) ), c.a ); }
-        // One repeat of a surface's texture inside its atlas cell; gradients come from the
+        // One repeat of a surface's material inside its atlas cell; gradients come from the
         // unwrapped coordinate so the wrap seam does not flicker.
         vec4 atlasTex( sampler2D t, vec2 uv ) {
-          const float pad = ${(ATLAS_PAD / ATLAS_CELL).toFixed(5)};
-          const float k = ${((1 - 2 * ATLAS_PAD / ATLAS_CELL) / ATLAS_GRID).toFixed(5)};
-          vec2 st = ( vTile + pad + fract( uv ) * ( 1.0 - 2.0 * pad ) ) / ${ATLAS_GRID.toFixed(1)};
+          const float pad = ${(pad / cell).toFixed(6)};
+          const float k = ${((T / cell) / ATLAS_GRID).toFixed(6)};
+          vec2 st = ( vTile + pad + fract( uv ) * ${(T / cell).toFixed(6)} ) / ${ATLAS_GRID.toFixed(1)};
           return textureGrad( t, st, dFdx( uv ) * k, dFdy( uv ) * k );
         }`);
-      for (const [chunk, src] of Object.entries(frag)) {
-        if (!f.includes(`#include <${chunk}>`)) throw new Error(`standard shader no longer includes ${chunk}`);
-        f = f.replace(`#include <${chunk}>`, src);
-      }
-      // saturation of the surface colour (faction paint and team markings), after the face colour is applied
-      f = f.replace('#include <color_fragment>', `#include <color_fragment>
-        { float lum = dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
-          float chroma = max( diffuseColor.r, max( diffuseColor.g, diffuseColor.b ) ) - min( diffuseColor.r, min( diffuseColor.g, diffuseColor.b ) );
-          // above 1 only what is already paint gains colour, so bare metal and concrete stay neutral
+      // Base colour, roughness, metalness and occlusion, all decided together.
+      f = f.replace(need('map_fragment'), '').replace(need('color_fragment'), `
+        vec4 surfA = atlasTex( map, vMapUv );                 // rgb tone / own colour, a = paint
+        vec4 surfO = atlasTex( roughnessMap, vMapUv );        // ao, roughness, metalness, chip pattern
+        int surfI = int( vTile.x + vTile.y * ${ATLAS_GRID.toFixed(1)} + 0.5 );
+        vec4 wearP = uWearP[ surfI ];                         // edge wear: width, metalness, roughness, lighten
+        // The face colour (faction paint, a team marking), its saturation set by the look: above 1
+        // only what is already paint gains colour, so greys stay neutral.
+        vec3 paint = vColor.rgb;
+        { float lum = dot( paint, vec3( 0.2126, 0.7152, 0.0722 ) );
+          float chroma = max( paint.r, max( paint.g, paint.b ) ) - min( paint.r, min( paint.g, paint.b ) );
           float k = uSat > 1.0 ? 1.0 + ( uSat - 1.0 ) * smoothstep( 0.05, 0.24, chroma ) : uSat;
-          diffuseColor.rgb = max( vec3( 0.0 ), mix( vec3( lum ), diffuseColor.rgb, k ) ); }
+          paint = max( vec3( 0.0 ), mix( vec3( lum ), paint, k ) ); }
+        // The same chip pattern read much larger: no two repeats of a tile weather alike.
+        float macro = atlasTex( roughnessMap, vMapUv * 0.283 + 0.37 ).a;
+        vec3 tone = max( vec3( 0.03 ), mix( vec3( 1.0 ), surfA.rgb * 1.09, uDetail ) ) * ( 0.9 + 0.2 * macro );
+        vec3 base = mix( surfA.rgb, paint * tone, surfA.a );
+        float surfR = surfO.g, surfM = surfO.b, surfAO = surfO.r;
+        // Edges of the object itself. vEdge: distance to each edge of this face; vEdgeK: what kind it is.
+        vec4 dW = mix( vec4( 1e3 ), vEdge / max( vEdgeK, vec4( 0.05 ) ), step( 0.02, vEdgeK ) );
+        vec4 dC = mix( vec4( 1e3 ), vEdge, step( 0.02, - vEdgeK ) );
+        float dWear = min( min( dW.x, dW.y ), min( dW.z, dW.w ) ), dCrease = min( min( dC.x, dC.y ), min( dC.z, dC.w ) );
+        float wearW = wearP.x * uWear * ( 0.35 + 1.3 * macro );   // some stretches of an edge are knocked about more than others
+        if ( wearW > 0.0 ) {
+          // Outside corners: on the corner about half the paint has gone, in flakes; a width in, only the odd one.
+          float chip = smoothstep( -0.04, 0.04, surfO.a - ( 0.47 + 0.5 * dWear / wearW ) );
+          vec3 under = wearP.w > 0.0 ? base * wearP.w + 0.015 : uWearC[ surfI ];
+          base = mix( base, under, chip );
+          surfR = mix( surfR, wearP.z, chip ); surfM = mix( surfM, wearP.y, chip );
+        }
+        { // Creases: where this part meets another, or the ground, dirt and damp stay.
+          float crease = 1.0 - smoothstep( 0.0, 1.5, dCrease + ( surfO.a - 0.5 ) * 1.1 );
+          base *= 1.0 - 0.55 * crease; surfR = mix( surfR, 0.96, 0.7 * crease ); surfM *= 1.0 - 0.8 * crease; surfAO *= 1.0 - 0.5 * crease; }
+        diffuseColor.rgb = base;
         // Weathering, fixed to the model: dirt patches, streaks that run down the sides, road dirt at the foot.
         float grime = 0.0;
         if ( uGrime > 0.0 ) {
@@ -551,15 +703,33 @@ export class Renderer3D {
           grime = clamp( uGrime * ( smoothstep( 0.44, 0.74, blot ) * 0.62 + smoothstep( 0.52, 0.84, streak ) * 0.4 + foot * 0.42 ), 0.0, 0.9 );
           diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3( 0.4, 0.36, 0.31 ) + vec3( 0.014, 0.012, 0.009 ), grime );
         }`);
+      f = f.replace(need('roughnessmap_fragment'), 'float roughnessFactor = surfR;').replace(need('metalnessmap_fragment'), 'float metalnessFactor = surfM;');
+      f = f.replace(need('normal_fragment_maps'), normalChunk);
       // roughness contrast around the middle: polished scratches against dull grime
       f = f.replace('#include <lights_physical_fragment>', `roughnessFactor = mix( clamp( 0.55 + ( roughnessFactor - 0.55 ) * uRoughK, 0.06, 1.0 ), 0.94, grime * 0.85 ); metalnessFactor *= 1.0 - grime * 0.7;
+        // Snow: a broken cover on what faces up. Paint (faction colour, team markings) is left
+        // nearly clear, so sides read as they do in any other weather.
+        if ( uSnow > 0.0 ) {
+          float upK = dot( normal, normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz ) );
+          float paintK = max( diffuseColor.r, max( diffuseColor.g, diffuseColor.b ) ) - min( diffuseColor.r, min( diffuseColor.g, diffuseColor.b ) );
+          float cover = uSnow * smoothstep( 0.6, 0.92, upK + ( noise3( vModel * 0.33 + 11.0 ) - 0.5 ) * 0.5 ) * ( 1.0 - 0.85 * smoothstep( 0.06, 0.22, paintK ) ) * 0.88;
+          diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.84, 0.88, 0.93 ), cover );
+          roughnessFactor = mix( roughnessFactor, 0.92, cover ); metalnessFactor *= 1.0 - cover; totalEmissiveRadiance *= 1.0 - cover;
+        }
         #include <lights_physical_fragment>`);
+      // Occlusion from the material (joints, the foot of a bolt, the gap between links) and from creases:
+      // all of the ambient light, and part of the direct light, since these are narrow places.
+      f = f.replace(need('aomap_fragment'), `#include <aomap_fragment>
+        reflectedLight.indirectDiffuse *= surfAO; reflectedLight.indirectSpecular *= mix( 1.0, surfAO, 0.8 );
+        reflectedLight.directDiffuse *= mix( 1.0, surfAO, 0.45 ); reflectedLight.directSpecular *= mix( 1.0, surfAO, 0.6 );`);
       // edge light: faces turning away from the camera catch the sky
       f = f.replace('#include <opaque_fragment>', `outgoingLight += uRim * pow( 1.0 - clamp( normal.z, 0.0, 1.0 ), 2.2 ) * vec3( 0.62, 0.7, 0.82 ) * ( 0.35 + diffuseColor.rgb );
+        // lamp light from street level: strongest at the foot of whatever stands there, gone by roof height
+        outgoingLight += uUplight * ( 1.0 - smoothstep( 2.0, 46.0, vModel.y ) ) * vec3( 1.0, 0.66, 0.36 ) * diffuseColor.rgb;
         #include <opaque_fragment>`);
       sh.fragmentShader = f;
     };
-    m.customProgramCacheKey = () => 'surface-atlas';
+    m.customProgramCacheKey = () => `surface-atlas-${T}`;
     this.glowMat = new THREE.MeshBasicMaterial({ vertexColors: true, color: new THREE.Color(GLOW, GLOW, GLOW) });
     // Fields (a shield dome, a wormhole throat, a mire): light added over whatever is behind, seen from both sides.
     this.fieldMat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
@@ -570,7 +740,7 @@ export class Renderer3D {
   /** Meshes for one model: everything solid in one geometry (one draw call), light sources in another. */
   meshesFor(model) {
     const mat = this.surfaceMaterial();
-    const solid = { p: [], n: [], c: [], t: [], k: [] }, out = [];
+    const solid = { p: [], n: [], c: [], t: [], k: [], e: [], ek: [] }, out = [];
     let glow = null, field = null;
     for (const b of modelBuckets(model)) {
       if (b.glow) { glow = glow || { p: [], n: [], c: [] }; glow.p.push(b.position); glow.n.push(b.normal); glow.c.push(b.color); continue; }
@@ -578,7 +748,7 @@ export class Renderer3D {
       const tile = this.tiles[b.surface] || this.tiles.panel, verts = b.position.length / 3;
       const k = new Float32Array(verts * 2);
       for (let i = 0; i < verts; i++) { k[i * 2] = tile[0]; k[i * 2 + 1] = tile[1]; }
-      solid.p.push(b.position); solid.n.push(b.normal); solid.c.push(b.color); solid.t.push(b.uv); solid.k.push(k);
+      solid.p.push(b.position); solid.n.push(b.normal); solid.c.push(b.color); solid.t.push(b.uv); solid.k.push(k); solid.e.push(b.edge); solid.ek.push(b.edgeK);
     }
     const cat = list => { const a = new Float32Array(list.reduce((s, x) => s + x.length, 0)); let o = 0; for (const x of list) { a.set(x, o); o += x.length; } return a; };
     if (solid.p.length) {
@@ -588,6 +758,8 @@ export class Renderer3D {
       geo.setAttribute('color', new THREE.BufferAttribute(cat(solid.c), 3));
       geo.setAttribute('uv', new THREE.BufferAttribute(cat(solid.t), 2));
       geo.setAttribute('tile', new THREE.BufferAttribute(cat(solid.k), 2));
+      geo.setAttribute('edge', new THREE.BufferAttribute(cat(solid.e), 4));
+      geo.setAttribute('edgeK', new THREE.BufferAttribute(cat(solid.ek), 4));
       out.push({ geo, mat, glow: false });
     }
     if (glow) {
@@ -662,6 +834,7 @@ export class Renderer3D {
     const { k } = v, W = this.W, H = this.H;
     const { renderer, scene, camera, sun, hemi, world, ground } = this;
 
+    for (const p of this.staticProps || []) this.add(p.key, p.build, p.x, p.y, 0, p.yaw || 0, p.scale || 1);
     for (const p of this.pools.values()) {
       const on = p.n > 0;
       for (const m of p.meshes) { m.visible = on; m.count = p.n; }
@@ -691,12 +864,12 @@ export class Renderer3D {
     // Haze: none on the near half of the field, about a third at its far edge, thicker beyond.
     const dTop = -(z0 * VY), dMid = -((z0 + (z1 - z0) * 0.5) * VY);
     scene.fog.near = dMid;
-    scene.fog.far = dMid + (dTop - dMid) / 0.3;
+    scene.fog.far = dMid + (dTop - dMid) / this.fogAmt;
 
     // Key light and its shadow frustum, fitted to what is on screen.
     const cx = (x0 + x1) / 2, cz = (zFar + z1) / 2, span = Math.hypot(x1 - x0, z1 - zFar) / 2 + MAX_H * 0.6;
     sun.target.position.set(cx, 0, cz);
-    sun.position.set(cx + SUN.x * 2400, SUN.y * 2400, cz + SUN.z * 2400);
+    sun.position.set(cx + this.sunDir.x * 2400, this.sunDir.y * 2400, cz + this.sunDir.z * 2400);
     const sc = sun.shadow.camera;
     if (sc.right !== span) { sc.left = -span; sc.right = span; sc.top = span; sc.bottom = -span; sc.near = 200; sc.far = 5200; sc.updateProjectionMatrix(); }
 
@@ -706,7 +879,7 @@ export class Renderer3D {
       l.intensity = q >= 1 ? 0 : u.peak * (1 - q) * (1 - q);
     }
     renderer.info.reset();
-    if (this.opts.reflections) {
+    if (this.opts.reflections && this.uLook.uMirror.value > 0) {             // dry or snow-covered ground mirrors nothing: no pass
       // Reflection pass: the whole world mirrored in the ground plane, lights included, so the
       // mirror image is lit and shadowed exactly like the original. Same projection, so it lands
       // on screen where the reflection belongs and the ground shader can sample it by pixel.
@@ -715,7 +888,7 @@ export class Renderer3D {
       hemi.color.copy(this.gndC); hemi.groundColor.copy(this.skyC);
       scene.environmentRotation.x = Math.PI;
       ground.visible = false;
-      scene.background = MIRROR_SKY;
+      scene.background = this.mirrorSky;
       renderer.setRenderTarget(this.reflRT);
       renderer.render(scene, camera);
       renderer.setRenderTarget(null);
@@ -724,7 +897,7 @@ export class Renderer3D {
       hemi.color.copy(this.skyC); hemi.groundColor.copy(this.gndC);
       scene.environmentRotation.x = 0;
       ground.visible = true;
-      scene.background = FOG;
+      scene.background = this.fogC;
     }
     renderer.setRenderTarget(this.sceneRT);
     renderer.render(scene, camera);

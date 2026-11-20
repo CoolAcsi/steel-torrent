@@ -145,7 +145,7 @@ const BALANCE = {
   },
 
   // Two basic skills and one superweapon per faction, in slot order. Basic skills work on
-  // bases and routes. Targets: ownCity, edge (a point on a road), enemyCity, ownCityPair.
+  // bases and routes. Targets: ownCity, edge (a point on a road), enemyCity, cityPair (any two bases).
   //
   // Emplacements (turret, slow, psi) stand beside one of your bases for `dur` seconds and act on
   // hostile armies within `range`. They end at once if the base changes hands or is destroyed.
@@ -185,7 +185,7 @@ const BALANCE = {
       { id: 'suppress', cd: 70, target: 'ownCity', emp: 'slow', dur: 30, range: 170, slow: 0.55 },
       // Chrono Wormhole: a temporary two-way link between two of your bases that your armies and
       // route planning can use. `capacity` soldiers may pass in total; `cost` is its length for planning.
-      { id: 'wormhole', super: true, cd: 240, target: 'ownCityPair', dur: 30, capacity: 160, cost: 30 },
+      { id: 'wormhole', super: true, cd: 240, target: 'cityPair', dur: 30, capacity: 160, cost: 30 },
     ],
     veil: [
       // Psychic Guard: hostile armies in range hit softer.

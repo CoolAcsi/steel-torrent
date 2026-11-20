@@ -60,10 +60,12 @@ export function initTutorial({ view, send, toast, name, faction }) {
   }
 
   function onLesson(m) {
-    const changed = !S.m || S.m.key !== m.key || S.m.n !== m.n || !!S.m.done !== !!m.done;
+    const changed = !S.m || S.m.key !== m.key || S.m.n !== m.n || !!S.m.done !== !!m.done || S.m.run !== m.run;   // a restart of the same step counts
     S.on = true;
     S.m = m;
     if (changed) { S.sent.clear(); S.dwell = { node: -1, n: 0 }; }
+    // A step about single orders: drop out of Auto, or a drag would make another persistent route.
+    if (changed && !m.done && m.mode === 'once' && view.autoMode && view.setAutoMode) view.setAutoMode(false);
     if (m.prog) {
       prog.done = lessonNos(m.prog.done);
       prog.skipped = lessonNos(m.prog.skipped).filter(n => !prog.done.includes(n));
@@ -84,6 +86,7 @@ export function initTutorial({ view, send, toast, name, faction }) {
     S.list = false;
     document.getElementById('game').classList.remove('tut-on');
     panel.classList.add('hidden');
+    if (view.setInset) view.setInset(null);
     pins.textContent = '';
     if (view.setGuide) view.setGuide(null);
     S.guideSig = '';
@@ -201,6 +204,14 @@ export function initTutorial({ view, send, toast, name, faction }) {
     const m = S.m;
     if (!S.on || !m || !view.active) { pins.textContent = ''; return; }
     const hi = m.hi || { nodes: [], labels: {}, roads: [], hud: [] };
+
+    // The map is laid out clear of this panel (beside it or below it), so no base hides under it.
+    // Sizes are rounded up so a line more or less of text does not re-lay the whole map.
+    if (view.setInset) {
+      const cv = document.getElementById('cv'), pr = panel.getBoundingClientRect(), cr = cv.getBoundingClientRect();
+      const shown = !panel.classList.contains('hidden') && pr.width > 0 && !S.list;
+      view.setInset(shown ? { w: Math.ceil((cr.right - pr.left + 10) / 20) * 20, h: Math.ceil((pr.bottom - cr.top - 54 + 12) / 48) * 48 } : null);
+    }
 
     // In-canvas guide, when the game view offers one (rings on bases, glow on roads).
     const sig = `${m.n}|${m.key}|${m.done ? 1 : 0}`;

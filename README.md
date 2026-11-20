@@ -61,7 +61,7 @@ The variable is ignored when `NODE_ENV=production`.
   disruption barrier on a road next to it.
 - **Superweapons** charge only while you hold three level-3 bases. The nuclear
   strike destroys one enemy base, leaving a neutral ruin that can be captured
-  and rebuilt; the chrono wormhole links two of your bases for a while; base
+  and rebuilt; the chrono wormhole links any two bases for a while (your troops cross from an end you hold, to reinforce or to attack); base
   mind control takes an enemy base with its garrison. A Base Shield stops a
   strike, and nobody's last base can be targeted.
 - **Auto dispatch** turns an order into a persistent one. Hover a route (or
@@ -104,6 +104,17 @@ paint and team colour with light weathering, a darker mirror-like wet street
 and warm lamps and windows. `?look=current|a|b|c` in the address shows the plain
 treatment and the three samples it was chosen from; `DEFAULT_LOOK` changes the
 default. The canvas renderer is not affected.
+
+**Models** come in sets (`public/js/modelset.js`). The game loads set A, "Hero
+silhouettes" (`public/js/sets/a.js` and `a-bases.js`): chunky proportions,
+units drawn 1.35x larger, and each base a fortress under one tall landmark that
+grows with its level. `?models=current` in the address shows the earlier models
+from `units.js` and `buildings.js`, `?models=b` and `?models=c` the two other
+samples the set was chosen from (they cover one roster per faction only). A set
+may replace units, bases, the compound wall, infantry muzzle positions and the
+marching formation; anything it leaves out falls back to the earlier models.
+On a development server (`DEV_TOOLS=1`), `?showcase=1` and `?showcase=2` open a
+frozen scene of bases and columns for comparing sets.
 
 Two renderers share the same models:
 

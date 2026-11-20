@@ -147,3 +147,56 @@ Z, X, C or the skill bar. What to click depends on the skill: one of your bases;
 
 On a base you hold that is a ruin, the upgrade button reads **Rebuild**.
 
+
+## Lounge, room names and private rooms
+
+The home screen lists every room that is waiting for players: its title, its
+host, how many seats are taken, and a lock if it is private. Click a row to
+join. A room in a match, a lesson or the art showcase is never listed.
+
+- **Room title.** The host types it at the top of the room panel (up to 24
+  characters; cleaned like a player name). An empty title shows as
+  "<host>'s room". The four-letter invite code is still there for links and
+  for joining by code.
+- **Private room.** The host ticks *Private room* and sets a key. The room
+  stays in the lounge with a lock; joining it (from the list, by code or by
+  invite link) asks for the key. The key is sent to the host only, never to
+  other players or to the lounge, is not put in the address bar and is not
+  logged. Wrong keys are counted for the room as a whole
+  (`KEY_ATTEMPTS` per `KEY_WINDOW_SECONDS`), so opening more connections does
+  not buy more guesses. Whoever is already in the room stays in when a key is
+  set; clearing the tick makes the room public again.
+
+## Start countdown
+
+When every player has loaded, the match counts down `START_COUNTDOWN_SECONDS`
+(5) of real time. During it the camera closes in on your own base, which is
+marked in your colour; the simulation stands still and no order is accepted.
+Then the view returns to the whole map and play begins at simulation time 0.
+Lessons do not count down.
+
+## Weather
+
+A room option, chosen by the host: *Random* (the default; picked from the match
+seed), *Rain*, *Snow*, *Sunshine* or *Night*. It changes the light, the ground
+and what falls over the field, and nothing else: the simulation never reads it.
+`?weather=snow` (or `rain`, `sun`, `night`) in the address previews a sky on
+your own screen only. Lessons are always played in the rain.
+
+## How armies are drawn
+
+One figure stands for a batch of ten soldiers of the same kind, so 34 riflemen
+and 12 tanks march as four soldiers and two tanks; a kind that is present always
+has at least one figure, and an army too large for the quality preset is drawn
+in batches of 20, 40, ... Tier-2 and tier-3 figures are drawn larger
+(`TIER_SCALE` in `public/js/art.js`). The plate above a column always carries
+the true numbers; combat never looks at figures.
+
+## Phones
+
+The match is laid out for screens from 320 px wide: the top bar keeps compact,
+scrollable player chips, the send bar uses icons for Auto and Rally, the skill
+bar sits above it, and the map is fitted clear of all of them (and of the
+tutorial panel). Orders are a one-finger drag from a base, a tap selects, two
+fingers pinch to zoom and one finger on open ground pans. A marching column is
+halted by tapping it and then its ×.

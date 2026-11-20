@@ -1061,7 +1061,7 @@ class Game {
    *   ownCity       { node }
    *   edge          { a, b, f }      a point on road a-b, f = fraction of the way from a to b
    *   enemyCity     { node }
-   *   ownCityPair   { node, to }
+   *   cityPair      { node, to }     any two different bases, whoever holds them
    * Returns { ok } or { ok: false, why }. A refused cast costs nothing.
    */
   skill(pi, slot, args = {}, cmdId) {
@@ -1117,9 +1117,12 @@ class Game {
       if (S.lastBaseImmune && this.basesOf(c.owner) <= 1) return { ok: false, why: 'lastBase' };
       this.strikes.push({ id: this.nextId++, kind: def.id, owner: pi, node: c.id, x: c.x, y: c.y, r: def.radius || 0, at: t + def.delay, def });
       ev = { node: c.id, x: c.x, y: c.y, r: def.radius || 0, delay: def.delay };
-    } else if (def.target === 'ownCityPair') {
+    } else if (def.target === 'cityPair') {
+      // A wormhole may join any two bases, whoever holds them (ruins included). Only its owner's
+      // troops use it, and only from an end they hold: the far end may be anybody's, so it can
+      // carry a reinforcement or an assault.
       const a = this.nodes[args.node], b = this.nodes[args.to];
-      if (!a || !b || a === b || a.owner !== pi || b.owner !== pi || a.ruin || b.ruin) return { ok: false, why: 'target' };
+      if (!a || !b || a === b) return { ok: false, why: 'target' };
       this.worms = this.worms.filter(w => w.owner !== pi);  // one wormhole per player: a new one replaces the old
       this.worms.push({ id: this.nextId++, owner: pi, a: a.id, b: b.id, t0: t, until: t + def.dur, left: def.capacity, def });
       this.topoRev++;
@@ -1261,10 +1264,8 @@ class Game {
     const before = this.emps.length + this.obst.length + this.worms.length;
     this.emps = this.emps.filter(e => e.until > t && this.nodes[e.node].owner === e.owner && this.alive[e.owner]);
     const obst = this.obst.filter(o => o.until > t && this.alive[o.owner]);
-    const worms = this.worms.filter(w => {
-      const a = this.nodes[w.a], b = this.nodes[w.b];
-      return w.until > t && w.left >= 1 && a.owner === w.owner && b.owner === w.owner && !a.ruin && !b.ruin;
-    });
+    // A wormhole lasts until its time is up or it has carried all it can, whoever holds its ends.
+    const worms = this.worms.filter(w => w.until > t && w.left >= 1 && this.alive[w.owner]);
     if (obst.length !== this.obst.length || worms.length !== this.worms.length) this.topoRev++;   // routes may be shorter or longer now
     this.obst = obst;
     this.worms = worms;

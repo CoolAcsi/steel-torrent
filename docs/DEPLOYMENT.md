@@ -42,6 +42,9 @@ None of these is a secret; the browser only ever receives `PUBLIC_URL`.
 | `JOIN_ATTEMPTS` / `JOIN_WINDOW_SECONDS` | `8` / `30` | Room-code attempts allowed per connection within the window; further tries get the `slow` error. |
 | `READY_WARN_SECONDS` | `45` | Real time a player may stay not-ready while others wait before being flagged idle (warned; the host is offered a kick). Nobody is kicked automatically. |
 | `LOAD_TIMEOUT_SECONDS` | `20` | Real time a starting match waits for clients to finish loading. After that it starts and slow clients load into the running match. |
+| `START_COUNTDOWN_SECONDS` | `5` | Real-time "get ready" countdown after loading. The simulation stands still and takes no orders while it runs; `0` turns it off. Lessons never count down. |
+| `ROOM_NAME_MAX` | `24` | Longest room title, in characters. |
+| `KEY_ATTEMPTS` / `KEY_WINDOW_SECONDS` | `10` / `60` | Wrong keys a private room accepts from everybody together within the window; after that every try gets the `slow` error until the window has passed. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 
 Binding to `0.0.0.0` does not by itself make the game public: the host's

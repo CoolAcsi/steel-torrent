@@ -202,12 +202,18 @@ class AIPlayer {
       } else if (def.target === 'enemyCity') {
         const c = prizes[0];
         if (c && (c.level >= 2 || holds(c) >= 20)) args = { node: c.id };
-      } else if (def.target === 'ownCityPair') {
-        // Link my fullest safe base to the one in trouble, and send help through at once.
+      } else if (def.target === 'cityPair') {
+        // From my fullest safe base: to a base of mine in trouble if there is one, otherwise
+        // straight into the best enemy base it can overwhelm. Troops go through at once.
         const src = bases.filter(c => !threatened.has(c.id) && c.units >= 20).sort((a, b) => b.units - a.units || a.id - b.id)[0];
         if (src && worst && worst !== src && !g.adj[src.id].has(worst.id)) {
           args = { node: src.id, to: worst.id };
           then = () => g.send(pi, [src.id], worst.id, 0.8);
+        } else if (src) {
+          const force = Math.min(src.units * 0.8, def.capacity);
+          const prize = g.nodes.filter(c => c.owner >= 0 && c.owner !== pi && !c.ruin && !g.adj[src.id].has(c.id) && c.units * 1.6 < force)
+            .sort((a, b) => b.level - a.level || a.units - b.units || a.id - b.id)[0];
+          if (prize) { args = { node: src.id, to: prize.id }; then = () => g.send(pi, [src.id], prize.id, 0.8); }
         }
       }
       if (args && g.skill(pi, slot, args).ok && then) then();

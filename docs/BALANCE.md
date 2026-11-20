@@ -117,7 +117,7 @@ needs an army of at least 7 to take anything.
 | iron | nuke (superweapon) | enemyCity | 240s | delay 4, radius 120, pct 0.5, flat 80, cap 900, hazardDur 6, hazardDps 25 |
 | meridian | aegis | ownCity | 75s | dur 14, hp 3000 |
 | meridian | suppress | ownCity | 70s | dur 30, range 170, slow 0.55 |
-| meridian | wormhole (superweapon) | ownCityPair | 240s | dur 30, capacity 160, cost 30 |
+| meridian | wormhole (superweapon) | cityPair | 240s | dur 30, capacity 160, cost 30 |
 | veil | guard | ownCity | 70s | dur 30, range 170, weaken 0.7 |
 | veil | mire | edge | 80s | dur 22, span 70, slow 0.5, weaken 0.8, detour 120 |
 | veil | dominate (superweapon) | enemyCity | 270s | delay 5 |
@@ -131,7 +131,7 @@ Rules that keep them fair:
 - Emplacements end when their base changes hands. A barricade has health and a `frontage`: only that many soldiers can work on it at once, so a huge column is held about as long as a small one. Routes cost `detour` more through a hostile obstacle and go round when a comparable way exists.
 - A superweapon is announced to everyone and lands after `delay`. It comes to nothing if the base is shielded by a Base Shield (which is used up), has become its owner's last base, or is no longer an enemy base. A player's last base cannot be targeted (`lastBaseImmune`).
 - **Nuclear strike** destroys the targeted base only: garrison dead, neutral ruin, no production or abilities, roads intact. Hostile columns within the radius take `pct` of their health plus `flat` (at most `cap`), and the ground hurts columns for `hazardDur`. A ruin is captured like any neutral base, holds 30, and is rebuilt by its holder for 10 soldiers in 15s into a level-1 base.
-- **Chrono wormhole** is one extra, two-way link between two of the caster's bases, used by routing automatically. It carries `capacity` soldiers in all, each player has one, and it closes when its time is up or either end is lost. Arrivals obey the destination's capacity.
+- **Chrono wormhole** is one extra, two-way link between any two bases, whoever holds them (ruins included), used by the caster's routing automatically. The caster's troops enter from an end the caster holds: into another of their bases they reinforce it (and obey its capacity), into anyone else's they attack it. It carries `capacity` soldiers in all, each player has one, and it closes when its time is up; losing an end does not close it, it only means nothing can enter from that end.
 - **Base mind control** hands over one base as it stands: level, garrison (flagged so it can never be converted again) and permanent abilities. Marching armies are untouched. Persistent orders from that base, and the old owner's orders to it, are cancelled.
 
 Nuclear strike versus mind control: the nuke removes a base from the map for both sides (the caster must still capture and pay to rebuild it) and kills its garrison outright; mind control gains a working base and its soldiers but charges longer (270s against 240s) and warns longer. Both are stopped by the same 75-second-cooldown Base Shield, and neither can finish a player off.

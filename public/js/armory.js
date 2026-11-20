@@ -7,6 +7,9 @@ import { FACTIONS, FACTION_IDS, subIds, weaponOf } from './factions.js';
 import { unitId } from './units.js';
 import { WEAPON, drawShot, recoilAt } from './weapons.js';
 import { t, applyDom, setLang, getLang, languages, onLangChange } from './i18n.js';
+import { loadModelSet } from './modelset.js';
+
+await loadModelSet();        // show the same model set the game uses (see modelset.js)
 
 const $ = id => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -18,7 +21,8 @@ const el = (tag, cls, text) => {
 
 const Z = 2.1;            // inspection zoom
 const ZB = 0.8;           // typical in-match zoom
-const CW = 300, CH = 176; // card canvas, world units at inspection zoom
+const UP = 64, UPB = 86;  // room above the rows for tall landmark bases
+const CW = 300, CH = 176 + UP; // card canvas, world units at inspection zoom
 const dpr = Math.min(window.devicePixelRatio || 1, 2);
 const big = new SpriteCache(), small = new SpriteCache();
 big.setScale(dpr * Z);
@@ -65,21 +69,21 @@ function drawCard(c, lt) {
 
   // structures (back row)
   [1, 2, 3].forEach((lv, i) => {
-    const x = 52 + i * 98, y = 78;
+    const x = 52 + i * 98, y = 78 + UP;
     drawSprite(ctx, baseSprite(big, f, sub, lv, team), x, y);
     drawBaseLive(ctx, baseInfo(f, sub, lv, team), team, x, y, lt, i * 1.9);
   });
 
   // units (front row): infantry toward and away, vehicles turning slowly
   const frame = Math.floor(lt * 8) & 3;
-  drawSprite(ctx, soldierSprite(big, f, sub, team, 1, frame), 22, 152);
-  drawSprite(ctx, soldierSprite(big, f, sub, team, 0, frame), 42, 150);
-  drawSprite(ctx, soldierSprite(big, f, sub, team, 5, frame), 62, 153);
+  drawSprite(ctx, soldierSprite(big, f, sub, team, 1, frame), 22, 152 + UP);
+  drawSprite(ctx, soldierSprite(big, f, sub, team, 0, frame), 42, 150 + UP);
+  drawSprite(ctx, soldierSprite(big, f, sub, team, 5, frame), 62, 153 + UP);
   const d = Math.floor(lt * 2.2) % DIRS;
-  vehicle(ctx, big, f, sub, 2, 110, 146, 3, lt, true);
-  vehicle(ctx, big, f, sub, 2, 166, 150, d, lt, false);
-  vehicle(ctx, big, f, sub, 3, 222, 146, 3, lt, true);
-  vehicle(ctx, big, f, sub, 3, 276, 150, (d + 16) % DIRS, lt, false);
+  vehicle(ctx, big, f, sub, 2, 110, 146 + UP, 3, lt, true);
+  vehicle(ctx, big, f, sub, 2, 166, 150 + UP, d, lt, false);
+  vehicle(ctx, big, f, sub, 3, 222, 146 + UP, 3, lt, true);
+  vehicle(ctx, big, f, sub, 3, 276, 150 + UP, (d + 16) % DIRS, lt, false);
 
   // the same units at battle zoom
   const b = c.bctx, kb = dpr * ZB;
@@ -88,12 +92,12 @@ function drawCard(c, lt) {
   b.fillRect(0, 0, c.bcv.width, c.bcv.height);
   b.setTransform(kb, 0, 0, kb, 0, 0);
   b.lineCap = 'round';
-  for (let i = 0; i < 6; i++) drawSprite(b, soldierSprite(small, f, sub, team, 1, (frame + i) & 3), 16 + (i % 3) * 11 + (i > 2 ? 5 : 0), 30 + (i > 2 ? 12 : 0));
-  for (let i = 0; i < 3; i++) vehicle(b, small, f, sub, 2, 84 + i * 30, 30 + i * 6, 3, lt, i === 0);
-  for (let i = 0; i < 2; i++) vehicle(b, small, f, sub, 3, 200 + i * 36, 30 + i * 6, 3, lt, i === 0);
-  drawSprite(b, baseSprite(small, f, sub, 1, team), 300, 36);
-  drawSprite(b, baseSprite(small, f, sub, 2, team), 384, 36);
-  drawSprite(b, baseSprite(small, f, sub, 3, team), 468, 36);
+  for (let i = 0; i < 6; i++) drawSprite(b, soldierSprite(small, f, sub, team, 1, (frame + i) & 3), 16 + (i % 3) * 11 + (i > 2 ? 5 : 0), 30 + UPB + (i > 2 ? 12 : 0));
+  for (let i = 0; i < 3; i++) vehicle(b, small, f, sub, 2, 84 + i * 30, 30 + UPB + i * 6, 3, lt, i === 0);
+  for (let i = 0; i < 2; i++) vehicle(b, small, f, sub, 3, 200 + i * 36, 30 + UPB + i * 6, 3, lt, i === 0);
+  drawSprite(b, baseSprite(small, f, sub, 1, team), 300, 36 + UPB);
+  drawSprite(b, baseSprite(small, f, sub, 2, team), 384, 36 + UPB);
+  drawSprite(b, baseSprite(small, f, sub, 3, team), 468, 36 + UPB);
 }
 
 function build() {
@@ -133,7 +137,7 @@ function build() {
       const structs = el('p', 'arm-structs', `${t('armory.structures')}: ${[1, 2, 3].map(lv => t(`factions.${f}.buildings.${lv}`)).join(' · ')}`);
       const bcv = el('canvas', 'arm-bcv');
       bcv.width = Math.round(520 * ZB * dpr);
-      bcv.height = Math.round(70 * ZB * dpr);
+      bcv.height = Math.round((70 + UPB) * ZB * dpr);
       card.append(title, cv, units, structs, el('small', '', t('armory.battleZoom')), bcv);
       row.append(card);
       cards.push({ f, sub, cv, ctx: cv.getContext('2d'), bcv, bctx: bcv.getContext('2d') });

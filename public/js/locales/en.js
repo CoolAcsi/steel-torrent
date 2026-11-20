@@ -21,6 +21,28 @@ export default {
     defaultName: 'Commander {n}',
   },
 
+  lounge: {
+    title: 'Open rooms',
+    count: '{n} waiting',
+    countMore: 'showing {n} of {total}',
+    empty: 'No rooms are waiting for players. Host one and it will be listed here.',
+    host: 'Host: {host}',
+    private: 'Private',
+    full: 'Full',
+    roomCode: 'Room {code}',
+    keyPrompt: 'This room is private. Ask its host for the key.',
+    keyField: 'Room key',
+    cancel: 'Cancel',
+  },
+
+  weather: {
+    random: 'Random',
+    rain: 'Rain',
+    snow: 'Snow',
+    sun: 'Sunshine',
+    night: 'Night',
+  },
+
   how: {
     title: 'How to play',
     send: {
@@ -55,6 +77,17 @@ export default {
 
   room: {
     label: 'Room',
+    nameLabel: 'Room name (the host can change it)',
+    codeLabel: 'Invite code',
+    weather: 'Weather',
+    private: 'Private',
+    privateOpt: 'Private room',
+    privateHint: 'Listed in the lounge with a lock. Joining needs the key you set here.',
+    keyLabel: 'Room key',
+    keyPlaceholder: 'Set a key',
+    keySet: 'Set key',
+    keySaved: 'Room is private. Share the key with the players you invite.',
+    keyEmpty: 'Type a key first.',
     leave: 'Leave',
     inviteTitle: 'Invite players on your network — they open this address',
     copy: 'Copy',
@@ -281,6 +314,12 @@ export default {
 
   game: {
     youCommand: 'You command {color}',
+    countdown: {
+      title: 'Battle begins in',
+      base: 'Your base · {color}',
+      watch: 'You are watching this match',
+      go: 'Go!',
+    },
     upgradeTo: 'Upgrade to {name} · {cost}',
     maxLevel: '{name} · max level',
     eliminated: '{name} has been eliminated',
@@ -407,7 +446,7 @@ export default {
     nuke: { name: 'Nuclear Strike', desc: 'After a {delay}s warning, destroys one enemy base: its garrison dies and it becomes a neutral ruin that must be captured and rebuilt. Hostile columns within {radius} are hurt. A Base Shield stops it, and a player\'s last base cannot be targeted.', target: 'Click an enemy base.', badge: 'Destroys this base' },
     aegis: { name: 'Base Shield', desc: 'Shields one of your bases for {dur}s. It absorbs {hp} damage before the garrison is hurt, and stops one superweapon aimed at the base, which uses it up.', target: 'Click one of your bases.' },
     suppress: { name: 'Suppression Emplacement', desc: 'Sets up a tower beside one of your bases for {dur}s. Hostile columns within {range} march {slow}% slower.', target: 'Click one of your bases.' },
-    wormhole: { name: 'Chrono Wormhole', desc: 'Links two of your bases for {dur}s. Your troops cross at once, in either direction, and routes use it by themselves. It carries {capacity} soldiers in all and closes if either base is lost.', target: 'Click one of your bases, then another.' },
+    wormhole: { name: 'Chrono Wormhole', desc: 'Links any two bases for {dur}s, whoever holds them. Your troops cross at once from an end you hold, and routes use it by themselves: into one of your bases it reinforces, into anyone else\'s it attacks. It carries {capacity} soldiers in all.', target: 'Click any base, then any other base.' },
     guard: { name: 'Psychic Guard', desc: 'Sets up a psychic tower beside one of your bases for {dur}s. Hostile columns within {range} deal {weaken}% less damage.', target: 'Click one of your bases.' },
     mire: { name: 'Disruption Barrier', desc: 'Covers a stretch of road next to one of your bases for {dur}s. Hostile columns inside it march {slow}% slower and deal {weaken}% less damage. It cannot be broken, only waited out or avoided.', target: 'Click a road that touches one of your bases.' },
     dominate: { name: 'Base Mind Control', desc: 'After a {delay}s warning, one enemy base and its whole garrison change to your side. Marching armies are not affected. A Base Shield stops it, and a player\'s last base cannot be targeted.', target: 'Click an enemy base.', badge: 'Takes this base' },
@@ -510,6 +549,8 @@ export default {
     match_started: 'That match has already started.',
     room_full: 'Room is full.',
     room_closed: 'That room has closed.',
+    key_required: 'This room is private. Enter its key.',
+    key_wrong: 'Wrong key. Check it with the host and try again.',
     slow: 'Too many attempts. Try again in {s} s.',
     notReady: 'Not everyone is ready yet.',
     need_opponent: 'Add at least one opponent first.',
@@ -637,7 +678,7 @@ export default {
       title: 'Persistent routes and cancelling',
       on: 'Press Auto (R), then drag from A to B. From now on A keeps sending troops to B by itself.',
       off: 'Now stop it. Point at the route and click its ×, or select A and press Delete. Columns already on the road keep marching.',
-      halt: 'A marching order can be cancelled too. Send troops from A to B the ordinary way, then point at that column\'s route and click its ×: the column stops and holds where it is.',
+      halt: 'A marching order can be cancelled too. Auto is off again (the button reads Once): drag from A to B to send a single column, then point at that column (on a touch screen, tap it) and press the × on it. The column stops and holds where it is.',
       redirect: 'A held column keeps its soldiers and can still be attacked. Click the column, then click a base, to send it there.',
       done: 'Cancelling never removes or teleports troops: a persistent route simply stops sending, and a halted column waits for orders.',
     },
