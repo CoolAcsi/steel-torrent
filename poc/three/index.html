@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Steel Tide · Three.js proof of concept</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1a1e23; overflow: hidden; }
+  canvas { position: fixed; inset: 0; display: block; }
+  #ov { pointer-events: none; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "/poc/node_modules/three/build/three.module.js", "three/addons/": "/poc/node_modules/three/examples/jsm/" } }
+</script>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<canvas id="ov"></canvas>
+<script type="module" src="main.js"></script>
+</body>
+</html>

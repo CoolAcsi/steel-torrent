@@ -1,0 +1,28 @@
+# systemd unit for Steel Tide.
+#   sudo useradd --system --home /opt/steel-tide steeltide
+#   sudo cp -r . /opt/steel-tide && cd /opt/steel-tide && sudo -u steeltide npm ci --omit=dev
+#   sudo cp deploy/steel-tide.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now steel-tide
+[Unit]
+Description=Steel Tide game server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=steeltide
+WorkingDirectory=/opt/steel-tide
+EnvironmentFile=/opt/steel-tide/.env
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=2
+# The server closes sockets cleanly on SIGTERM; players reconnect to the new process.
+KillSignal=SIGTERM
+TimeoutStopSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

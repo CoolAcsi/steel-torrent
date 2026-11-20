@@ -1,0 +1,23 @@
+{
+  "name": "steel-tide",
+  "version": "1.0.0",
+  "description": "Isometric node-conquest strategy game for the browser with LAN rooms, AI players and English/Chinese localization",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "start:prod": "NODE_ENV=production node --env-file-if-exists=.env server.js",
+    "test": "node test/sim.test.js && node test/route.test.mjs && node test/auto.test.mjs && node test/clock.test.mjs && node test/i18n.test.mjs && node test/vendor.test.mjs && node test/net.test.mjs",
+    "poc": "node poc/serve.js",
+    "vendor": "node scripts/vendor-three.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=20.12"
+  },
+  "devDependencies": {
+    "three": "0.187.0"
+  }
+}

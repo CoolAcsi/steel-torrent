@@ -1,0 +1,13 @@
+{
+  "name": "steel-tide-renderer-poc",
+  "private": true,
+  "description": "Engine proofs of concept for the battlefield view. Not part of the game or its deployment.",
+  "type": "module",
+  "scripts": {
+    "start": "node serve.js"
+  },
+  "dependencies": {
+    "babylonjs": "9.37.1",
+    "three": "0.187.0"
+  }
+}

@@ -1,0 +1,9 @@
+node_modules
+.git
+.env
+.claude
+docs
+test
+deploy
+*.md
+poc

@@ -1,0 +1,17 @@
+# Caddy reverse proxy for Steel Tide. Caddy obtains and renews the certificate
+# itself and proxies WebSocket upgrades without extra configuration.
+#   caddy run --config deploy/Caddyfile
+#
+# App environment: HOST=127.0.0.1 PORT=3000 TRUST_PROXY=1 PUBLIC_URL=https://play.example.com
+
+play.example.com {
+  # Keep the health endpoint private.
+  @health path /healthz
+  respond @health 404
+
+  reverse_proxy 127.0.0.1:3000 {
+    header_up X-Forwarded-Host {host}
+    # The app compresses its own responses.
+    flush_interval -1
+  }
+}
