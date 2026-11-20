@@ -1,0 +1,48 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "steel-tide",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "server.js"
+      ],
+      "port": 3000
+    },
+    {
+      "name": "steel-tide-seeded",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "DEV_TOOLS=1",
+        "MATCH_SEED=4242",
+        "PORT=3100",
+        "node",
+        "server.js"
+      ],
+      "port": 3100
+    },
+    {
+      "name": "poc",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "PORT=3200",
+        "node",
+        "poc/serve.js"
+      ],
+      "port": 3200
+    },
+    {
+      "name": "steel-tide-prod",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "NODE_ENV=production",
+        "PORT=3300",
+        "HOST=127.0.0.1",
+        "ALLOWED_ORIGINS=http://localhost:3300",
+        "node",
+        "server.js"
+      ],
+      "port": 3300
+    }
+  ]
+}

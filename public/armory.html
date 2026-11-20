@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#16191b">
+<title>Steel Tide</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="armory">
+<svg width="0" height="0" class="sprite-sheet" aria-hidden="true">
+  <symbol id="i-globe" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M2.5 10h15M10 2.5c-3.4 3.6-3.4 11.4 0 15M10 2.5c3.4 3.6 3.4 11.4 0 15" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+</svg>
+
+<header class="arm-head">
+  <a class="btn small ghost" href="./" data-i18n="armory.back"></a>
+  <h1 data-i18n="armory.title"></h1>
+  <div class="arm-tools">
+    <label class="arm-tool"><span data-i18n="armory.teamColor"></span><span id="arm-colors" class="arm-colors"></span></label>
+    <label class="arm-tool"><input type="checkbox" id="arm-gray"> <span data-i18n="armory.grayscale"></span></label>
+    <label class="lang">
+      <svg class="ico"><use href="#i-globe"/></svg>
+      <select class="lang-select" data-i18n-attr="aria-label:hud.language"></select>
+    </label>
+  </div>
+</header>
+<p class="arm-intro" data-i18n="armory.intro"></p>
+<main id="arm-list"></main>
+
+<script type="module" src="js/armory.js"></script>
+</body>
+</html>

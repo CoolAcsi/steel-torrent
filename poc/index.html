@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Steel Tide · renderer proofs of concept</title>
+<style>
+  body { margin: 0; min-height: 100vh; background: #14171b; color: #e6ebf0; font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; display: grid; place-items: center; }
+  main { max-width: 760px; padding: 32px 20px; }
+  h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: .02em; }
+  p { color: #aab4be; margin: 0 0 22px; }
+  a.card { display: block; padding: 16px 18px; margin: 0 0 12px; border: 1px solid #2c333b; border-left: 3px solid #e8b72c; border-radius: 4px; background: #1b2026; color: inherit; text-decoration: none; }
+  a.card:hover { background: #222830; }
+  a.card b { display: block; font-size: 16px; margin-bottom: 2px; }
+  a.card span { color: #aab4be; font-size: 13.5px; }
+  small { color: #7f8a95; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Renderer proofs of concept</h1>
+  <p>The same battlefield snapshot, the game's own base and unit models, the same ground painting and scenery, rendered by two engines. Each page has switches for reflections, ambient occlusion, bloom, shadows, rain and plates.</p>
+  <a class="card" href="three/"><b>Three.js</b><span>Lean library. Lighting, shadows, ambient occlusion and bloom from the library; the wet-ground reflection is a small custom shader.</span></a>
+  <a class="card" href="babylon/"><b>Babylon.js</b><span>Full engine. Mirror reflections, ambient occlusion, glow and the post-processing pipeline are built in.</span></a>
+  <small>Development only. Nothing here is loaded by the game or shipped with it.</small>
+</main>
+</body>
+</html>

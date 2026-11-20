@@ -1,0 +1,24 @@
+node_modules/
+.DS_Store
+.env
+
+# Local agent tooling installed on this machine: not part of the project.
+.agents/
+.claude/skills/
+.aiden/
+.coco/
+.hermes/
+.trae/
+.trae-cn/
+agentbuddy.yaml
+agentbuddy-lock.yaml
+
+# Screenshots of the room panel show the host's network invite addresses.
+docs/screenshots/after-room-zh.jpg
+docs/screenshots/before-room.jpg
+docs/screenshots/factions-lobby-picker.jpg
+docs/screenshots/r6-lobby-1-room.jpg
+docs/screenshots/r6-lobby-2-ready-waiting.jpg
+docs/screenshots/r6-lobby-3-idle-host-kick.jpg
+docs/screenshots/r6-lobby-4-idle-guest-warning.jpg
+docs/screenshots/r6-lobby-9-room-zh.jpg
