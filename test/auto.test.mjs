@@ -28,7 +28,11 @@ function watch(g, seconds, until) {
   });
   return out;
 }
-const stateOf = (g, src) => (g.autos.get(src) || {}).state;
+const stateOf = (g, src, dest) => {
+  if (dest != null) return (g.autos.get(g.autoKey(src, dest)) || {}).state;
+  for (const o of g.autos.values()) if (o.src === src) return o.state;
+  return undefined;
+};
 
 section('one order, several cities: every source keeps sending on its own route, cycle after cycle', () => {
   const g = board([0, 1, 2, 3]);
@@ -179,17 +183,82 @@ section('stopping an order stops departures, not the armies already marching', (
   assert.deepStrictEqual([...g.clearAuto(ME, [0, 9], 3)], [[0, -REJECT.notYours], [9, -REJECT.notYours]], 'nothing to stop there');
 });
 
-section('setup is idempotent, an order can be replaced, and bad sources are refused by name', () => {
+section('setup is idempotent, multiple parallel routes coexist, and bad sources are refused by name', () => {
   const g = board([0, 1, 2, 3]);
+  own(g, 0, ME, 40);
   const first = g.setAuto(ME, [0, 9, 3, 0], 3, 0.5, 7);
   assert.deepStrictEqual([...first], [[0, 1], [9, -REJECT.notYours], [3, -REJECT.isTarget]]);
   for (let i = 0; i < 4; i++) assert.deepStrictEqual([...g.setAuto(ME, [0, 9, 3, 0], 3, 0.5, 7)], [...first], 'a retried message gets the first answer');
   assert.strictEqual(g.autos.size, 1);
-  g.setAuto(ME, [0], 2, 0.25, 8);                          // retarget
-  assert.deepStrictEqual(g.autoList(ME), [[0, 2, 25, AUTO.active]]);
+  g.setAuto(ME, [0], 2, 0.5, 8);                           // add a second parallel route from city 0
+  assert.deepStrictEqual(g.autoList(ME), [[0, 2, 50, AUTO.active], [0, 3, 50, AUTO.active]]);
   const out = watch(g, 1);
-  assert.deepStrictEqual(out.map(o => [o.src, o.dest, o.n]), [[0, 2, 5]]);
+  assert.deepStrictEqual(out.map(o => [o.src, o.dest, o.n]).sort((a, b) => a[1] - b[1]), [[0, 2, 10], [0, 3, 10]]);
+  assert.deepStrictEqual([...g.clearAuto(ME, [0], 9, 3)], [[0, 1]], 'cancelling one parallel route keeps the other');
+  assert.deepStrictEqual(g.autoList(ME), [[0, 2, 50, AUTO.active]]);
   assert.deepStrictEqual(g.autoList(FOE), [], 'orders are private to their owner');
+});
+
+section('parallel routes split troops evenly, and chain pairs a->b->c run simultaneously', () => {
+  const g = board([0, 1, 2, 3]);
+  own(g, 0, ME, 100); own(g, 1, ME, 60);
+  const total = soldiers(g);
+  const res = g.setAutoPairs(ME, [[0, 1], [1, 2]], 0.5, 10);
+  assert.deepStrictEqual([...res], [[0, 1], [1, 1]]);
+  assert.deepStrictEqual(g.autoList(ME), [[0, 1, 50, AUTO.active], [1, 2, 50, AUTO.active]]);
+  const out = watch(g, 1);
+  assert.deepStrictEqual(out.map(o => [o.src, o.dest, o.n]).sort((a, b) => a[0] - b[0]), [[0, 1, 50], [1, 2, 30]]);
+  assert.strictEqual(soldiers(g), total, 'soldiers conserved across chain dispatch');
+});
+
+section('setAutoPairs with replace=true overwrites all previous routes of the player without touching foes', () => {
+  const g = board([0, 1, 2, 3]);
+  own(g, 0, ME, 100); own(g, 1, ME, 100); own(g, 8, FOE, 100);
+  g.setAutoPairs(ME, [[0, 1], [1, 2]], 0.5, 11, false);
+  g.setAuto(FOE, [8], 7, 0.5, 12);
+  assert.deepStrictEqual(g.autoList(ME).map(o => o.slice(0, 2)), [[0, 1], [1, 2]]);
+  const res = g.setAutoPairs(ME, [[0, 3]], 0.5, 13, true);
+  assert.deepStrictEqual([...res], [[0, 1]]);
+  assert.deepStrictEqual(g.autoList(ME).map(o => o.slice(0, 2)), [[0, 3]], 'old routes should be replaced by the new plan');
+  assert.deepStrictEqual(g.autoList(FOE).map(o => o.slice(0, 2)), [[8, 7]], 'opponent routes must remain untouched');
+});
+
+section('each road segment allows only one dispatch direction; newer dispatches overwrite opposing ones', () => {
+  const g = board([0, 1, 2, 3]);
+  own(g, 0, ME, 100); own(g, 1, ME, 100); own(g, 2, ME, 100); own(g, 3, ME, 100);
+  // 0 -> 2 uses roads 0->1 and 1->2
+  g.setAuto(ME, [0], 2, 0.5, 20);
+  assert.deepStrictEqual(g.autoList(ME).map(o => o.slice(0, 2)), [[0, 2]]);
+  // Setting 2 -> 1 uses road 2->1 (opposite of 1->2), so 0 -> 2 must be overwritten
+  g.setAuto(ME, [2], 1, 0.5, 21);
+  assert.deepStrictEqual(g.autoList(ME).map(o => o.slice(0, 2)), [[2, 1]], 'opposing route on shared road segment must be overwritten');
+  // Setting 1 -> 2 reverses 2 -> 1
+  g.setAutoPairs(ME, [[1, 2], [2, 3]], 0.5, 22, false);
+  assert.deepStrictEqual(g.autoList(ME).map(o => o.slice(0, 2)), [[1, 2], [2, 3]], 'new chain overwrites old opposite road direction');
+});
+
+section('clearAutoSegment cancels dispatch on that specific road segment while keeping upstream segments', () => {
+  const g = board([0, 1, 2, 3]);
+  own(g, 0, ME, 100); own(g, 1, ME, 100); own(g, 2, ME, 100);
+  // Multi-hop 0 -> 2 (uses 0->1 and 1->2) plus 1 -> 2 (uses 1->2)
+  g.setAutoPairs(ME, [[0, 2], [1, 2]], 0.5, 30, true);
+  // Cancel road segment 1 -> 2: removes 1->2 and truncates 0->2 to 0->1
+  const res = g.clearAutoSegment(ME, 1, 2, 31);
+  assert(res.length >= 1 && res.every(r => r[1] === 1));
+  assert.deepStrictEqual(g.autoList(ME).map(o => o.slice(0, 2)), [[0, 1]], 'cancelling 1->2 keeps 0->1 intact');
+  // Cancel road segment 0 -> 1: removes 0->1
+  g.clearAutoSegment(ME, 0, 1, 32);
+  assert.deepStrictEqual(g.autoList(ME), [], 'cancelling 0->1 clears remaining segment');
+});
+
+section('setAutoPct updates dispatch ratio globally for all active routes of the player', () => {
+  const g = board([0, 1, 2, 3]);
+  own(g, 0, ME, 100); own(g, 1, ME, 100); own(g, 8, FOE, 100);
+  g.setAutoPairs(ME, [[0, 1], [1, 2]], 0.25, 40, true);
+  g.setAuto(FOE, [8], 7, 0.5, 41);
+  assert.strictEqual(g.setAutoPct(ME, 0.75), 2);
+  assert.deepStrictEqual(g.autoList(ME).map(o => [o[0], o[1], o[2]]), [[0, 1, 75], [1, 2, 75]]);
+  assert.deepStrictEqual(g.autoList(FOE).map(o => [o[0], o[1], o[2]]), [[8, 7, 50]], 'opponent ratio must not change');
 });
 
 section('a city under attack keeps its garrison: the order holds until the siege is over', () => {

@@ -21,7 +21,7 @@ import { SpriteCache, drawSprite, F } from './iso.js';
 import { buildTerrain } from './terrain.js';
 import { planScenery, lampModel } from './scenery.js';
 import { makeState, applyFull, applyUpdate } from './netstate.js';
-import { planRoute } from './route.js';
+import { planRoute, planBalancedDispatch } from './route.js';
 import { FEAT_COLOR, empSpot, drawEmplacement, drawBarricade, drawMire, drawPortal, drawAegis, drawCancel } from './battlefield.js';
 import { sfx } from './sfx.js';
 import { t, fmt, getLang } from './i18n.js';
@@ -86,13 +86,24 @@ export class GameView {
     this.q = QUALITY.high;
     this.r3d = null;              // WebGL renderer, created on demand
     this.use3d = false;
+    this.autoMode = true;         // persistent auto dispatch is on by default
+    this.hoverCancel = null;      // key (`src|dest`) of the auto route whose cancel "×" is hovered
+    this.rallyMode = false;       // pick 1+ targets for optimal/even rally or attack scheduling
+    this.rallyTargets = new Set();
+    this.shiftRally = false;      // auto-confirm rally/attack targets when Shift is released
+    this.activeTargets = new Set();
+    this.hoverCity = -1;
+    this.hoverMenu = false;
+    this.hoverKeepUntil = 0;
+    this.cityActTarget = -1;
+    this.cityActSig = '';
     this._frame = this._frame.bind(this);
 
     canvas.addEventListener('pointerdown', e => this.onDown(e));
     canvas.addEventListener('pointermove', e => this.onMove(e));
     canvas.addEventListener('pointerup', e => this.onUp(e));
     canvas.addEventListener('pointercancel', e => { this.touches.delete(e.pointerId); this.pinch = null; this.pan = null; if (this.drag && this.drag.pid === e.pointerId) this.drag = null; });
-    canvas.addEventListener('pointerleave', () => { this.hover = -1; this.ptr = null; this.routeHover = null; });
+    canvas.addEventListener('pointerleave', () => { this.hover = -1; this.hoverCancel = null; this.ptr = null; this.routeHover = null; });
     canvas.addEventListener('wheel', e => { if (!this.map) return; e.preventDefault(); this.zoomAt(Math.exp(-e.deltaY * 0.0016), e.clientX, e.clientY); }, { passive: false });
     this.hasCamera = true;          // the view can zoom and pan (the tutorial's first lesson asks for both)
     this.touches = new Map();       // pointers currently down, for pinch zoom
@@ -102,6 +113,30 @@ export class GameView {
     canvas.addEventListener('contextmenu', e => { e.preventDefault(); this.cancel(); });
     window.addEventListener('resize', () => this.resize());
     els.upgrade.addEventListener('click', () => { if (this.sel >= 0) this.hooks.upgrade(this.sel); });
+    if (els.cityActions) {
+      els.cityActions.addEventListener('mouseenter', () => { this.hoverMenu = true; });
+      els.cityActions.addEventListener('mouseleave', () => { this.hoverMenu = false; this.hoverKeepUntil = performance.now() + 140; });
+      const onlyBtn = els.cityActions.querySelector('#ca-only');
+      const addBtn = els.cityActions.querySelector('#ca-add');
+      if (onlyBtn) onlyBtn.addEventListener('click', () => {
+        const i = this.cityActTarget;
+        if (i >= 0) this.dispatchToTargets([i]);
+      });
+      if (addBtn) addBtn.addEventListener('click', () => {
+        const i = this.cityActTarget;
+        if (i < 0) return;
+        const next = new Set(this.activeTargets);
+        if (next.has(i) && next.size > 1) {
+          next.delete(i);
+        } else {
+          if (next.size === 0 && this.autos.size > 0) {
+            for (const o of this.autos.values()) next.add(o.dest);
+          }
+          next.add(i);
+        }
+        this.dispatchToTargets([...next]);
+      });
+    }
   }
 
   // ------------------------------------------------------------ lifecycle
@@ -150,8 +185,10 @@ export class GameView {
     this.pausedBy = null;
     this.speed = 1;
     this.off = m.time - performance.now() / 1000;
-    this.autos = new Map();         // my persistent orders: source city -> { dest, pct, state }
-    this.autoMode = false;          // the next order sets a persistent route instead of sending once
+    this.autos = new Map();         // my persistent orders: `${src}|${dest}` -> { src, dest, pct, state }
+    // Orders default to persistent auto dispatch until toggled off. Lessons start with single
+    // dispatch, which is what they teach first; the auto dispatch lesson switches it on.
+    this.autoMode = !m.tutorial;
     this.autoRev = 0;
     this.ownerRev = 0;
     this.autoPaths = null;
@@ -166,6 +203,16 @@ export class GameView {
     this.sel = -1;
     this.picked = new Set();        // cities chosen for a multi-city order
     this.hover = -1;
+    this.hoverCancel = null;
+    this.hoverCity = -1;
+    this.hoverMenu = false;
+    this.hoverKeepUntil = 0;
+    this.cityActTarget = -1;
+    this.cityActSig = '';
+    this.rallyMode = false;
+    this.rallyTargets = new Set();
+    this.shiftRally = false;
+    this.activeTargets = new Set();
     this.ptr = null;
     this.drag = null;
     this.targeting = null;
@@ -208,7 +255,12 @@ export class GameView {
   stop() {
     this.active = false;
     this.targeting = null;
+    this.shiftRally = false;
+    this.hoverMenu = false;
+    this.hoverCity = -1;
+    this.cityActTarget = -1;
     this.els.upgrade.classList.add('hidden');
+    if (this.els.cityActions) this.els.cityActions.classList.add('hidden');
     this.els.info.classList.add('hidden');
   }
 
@@ -345,9 +397,14 @@ export class GameView {
     return out;
   }
 
+  autoKey(src, dest) { return `${src}|${dest}`; }
+  hasAutoFrom(src) { for (const o of this.autos.values()) if (o.src === src) return true; return false; }
+  autosFrom(src) { const out = []; for (const o of this.autos.values()) if (o.src === src) out.push(o); return out; }
+
   /** My persistent orders, as the server holds them: [[source, destination, percent, state]]. */
   setAutos(list) {
-    this.autos = new Map(list.map(([src, dest, pct, state]) => [src, { dest, pct: pct / 100, state }]));
+    this.autos = new Map(list.map(([src, dest, pct, state]) => [this.autoKey(src, dest), { src, dest, pct: pct / 100, state }]));
+    if (!list.length) this.activeTargets.clear();
     this.autoRev++;
     if (this.hooks.onAutos) this.hooks.onAutos();
   }
@@ -874,16 +931,41 @@ export class GameView {
     const startPan = () => { this.pan = { pid: e.pointerId, x: e.clientX, y: e.clientY, moved: false }; try { this.cv.setPointerCapture(e.pointerId); } catch { /* not capturable */ } };
     if (e.pointerType === 'mouse' && e.button !== 0) { if (e.button === 1) { e.preventDefault(); startPan(); } return; }
     if (this.targeting) return this.targetClick(p);
-    // A cancel control is on top of everything: clicking it never reaches the map underneath.
-    const chip = this.chipAt(p);
+    // Cancel controls are on top of everything: clicking one never reaches the map underneath.
+    const cancelHit = this.autoCancelAt(p);                // the × on a persistent route's road segment
+    if (cancelHit) {
+      this.stopAutoSegment(cancelHit.u, cancelHit.v);
+      this.hoverCancel = null;
+      return;
+    }
+    const chip = this.chipAt(p);                           // the × of a marching column
     if (chip) return this.cancelRoute(chip);
     const id = this.nodeAt(p);
     if (!this.canPlay()) { this.sel = id; if (id >= 0 && this.hooks.onInspect) this.hooks.onInspect(id); if (id < 0) startPan(); return; }      // spectators can still inspect cities
+    if (this.rallyMode) {
+      if (id >= 0) {
+        if (this.rallyTargets.has(id)) this.rallyTargets.delete(id); else this.rallyTargets.add(id);
+        if (e.shiftKey) this.shiftRally = true;
+        if (this.hooks.onAutos) this.hooks.onAutos();
+      }
+      return;
+    }
     if (this.selArmy >= 0) {                              // a column of mine is picked: a city is its new destination
       if (id >= 0) return this.redirectTo(id);
       const again = this.myArmyAt(p);
       this.selArmy = again ? again.id : -1;
       if (!again) startPan();
+      return;
+    }
+    if (id >= 0 && e.shiftKey && this.owner[id] !== this.me) {
+      // Shift+clicking enemy/neutral cities quickly builds a multi-target attack/rally set.
+      if (this.sel >= 0 && this.sel !== id && !this.rallyTargets.size) this.rallyTargets.add(this.sel);
+      this.rallyMode = true;
+      this.shiftRally = true;
+      if (this.rallyTargets.has(id)) this.rallyTargets.delete(id); else this.rallyTargets.add(id);
+      this.sel = -1;
+      this.picked.clear();
+      if (this.hooks.onAutos) this.hooks.onAutos();
       return;
     }
     if (id < 0) {
@@ -894,15 +976,22 @@ export class GameView {
       if (e.shiftKey) {                                  // build up a multi-city selection
         if (this.picked.has(id)) this.picked.delete(id); else this.picked.add(id);
         this.sel = id;
+        if (this.hooks.onAutos) this.hooks.onAutos();
         return;
       }
-      // Dragging from a picked city orders the whole selection; otherwise just this city.
-      const sources = this.picked.has(id) ? new Set(this.picked) : new Set([id]);
-      this.drag = { sources, start: id, x: p.x, y: p.y, target: -1, ok: false, pid: e.pointerId, moved: false };
+      // Dragging from a Shift-picked multi-selection uses fan-in mode; dragging from one city builds a continuous chain a->b->c.
+      const fan = this.picked.size > 1 && this.picked.has(id);
+      const sources = fan ? new Set(this.picked) : new Set([id]);
+      this.drag = {
+        mode: fan ? 'fan' : 'chain',
+        chain: [id],
+        sources, start: id, x: p.x, y: p.y, target: -1, ok: false, pid: e.pointerId, moved: false,
+      };
       try { this.cv.setPointerCapture(e.pointerId); } catch { /* not capturable */ }
     } else {
       this.sel = this.sel === id ? -1 : id;
       if (id >= 0 && this.sel === id && this.hooks.onInspect) this.hooks.onInspect(id);
+      if (this.hooks.onAutos) this.hooks.onAutos();
       if (id < 0) { this.picked.clear(); startPan(); }   // open ground: drag to move the camera
     }
   }
@@ -925,19 +1014,44 @@ export class GameView {
     }
     const p = this.toView(e);
     this.ptr = p;
-    const h = this.nodeAt(p);
-    this.hover = e.pointerType === 'mouse' || this.targeting ? h : -1;
+    const cancelH = !this.drag && !this.targeting && e.pointerType === 'mouse' ? this.autoCancelAt(p) : null;
+    this.hoverCancel = cancelH ? cancelH.key : null;
+    const h = cancelH ? -1 : this.nodeAt(p);
+    this.hover = e.pointerType === 'mouse' || this.targeting || this.rallyMode ? h : -1;
+    if (e.pointerType === 'mouse' && h >= 0 && !this.drag && !this.targeting) {
+      this.hoverCity = h;
+      this.hoverKeepUntil = performance.now() + 260;
+    }
     const d = this.drag;
     if (!d) {
-      this.routeHover = e.pointerType === 'mouse' && !this.targeting && h < 0 ? this.routesNear(p) : null;
+      this.routeHover = e.pointerType === 'mouse' && !this.targeting && !this.rallyMode && h < 0 && !cancelH ? this.routesNear(p) : null;
       const chip = this.chipAt(p);
-      this.cv.style.cursor = this.targeting ? 'crosshair' : chip || h >= 0 || this.myArmyAt(p) ? 'pointer' : 'default';
+      this.cv.style.cursor = this.targeting || this.rallyMode ? 'crosshair' : cancelH || chip || h >= 0 || this.myArmyAt(p) ? 'pointer' : 'default';
       return;
     }
     if (d.pid !== e.pointerId) return;
     if (Math.hypot(p.x - d.x, p.y - d.y) > 6) d.moved = true;
     d.px = p.x; d.py = p.y;
-    // Sweeping over more of your own cities adds them to the order.
+    if (d.mode === 'chain') {
+      if (h >= 0) {
+        const last = d.chain[d.chain.length - 1];
+        if (h !== last) {
+          if (d.chain.length >= 2 && h === d.chain[d.chain.length - 2]) {
+            d.chain.pop();
+          } else {
+            // Only my own cities may act as intermediate hops; replace a non-owned tail if pointer moves on.
+            if (this.owner[last] !== this.me) d.chain.pop();
+            if (!d.chain.includes(h)) d.chain.push(h);
+          }
+        }
+      } else if (d.chain.length > 1 && this.owner[d.chain[d.chain.length - 1]] !== this.me) {
+        d.chain.pop();
+      }
+      d.target = d.chain.length > 1 ? d.chain[d.chain.length - 1] : -1;
+      d.ok = d.chain.length > 1;
+      return;
+    }
+    // Fan-in mode (from Shift-selected multi-city group): sweeping over more own cities adds them.
     if (h >= 0 && this.owner[h] === this.me && h !== d.start) d.sources.add(h);
     d.target = h >= 0 && (h !== d.start || d.sources.size > 1) ? h : -1;
     d.plan = d.target >= 0 ? this.plan([...d.sources], d.target) : null;
@@ -958,8 +1072,7 @@ export class GameView {
     this.drag = null;                                    // the gesture ends here whatever happens next
     if (!this.canPlay()) return;
     const h = this.nodeAt(this.toView(e));
-    if (h < 0) return;                                   // released on open ground: cancelled, nothing spent
-    if (h === d.start && !d.moved) {
+    if (!d.moved && h === d.start) {
       const now = performance.now();
       if (this.lastTap.id === h && now - this.lastTap.t < 350) {
         this.hooks.upgrade(h);
@@ -969,9 +1082,29 @@ export class GameView {
         if (this.sel === h && this.hooks.onInspect) this.hooks.onInspect(h);
         this.picked.clear();
         this.lastTap = { id: h, t: now };
+        if (this.hooks.onAutos) this.hooks.onAutos();
       }
       return;
     }
+    if (d.mode === 'chain') {
+      if (h < 0 && d.chain.length < 2) return;           // released on open ground with no chain built
+      if (h >= 0) {
+        const last = d.chain[d.chain.length - 1];
+        if (h !== last) {
+          if (this.owner[last] !== this.me) d.chain.pop();
+          if (!d.chain.includes(h)) d.chain.push(h);
+        }
+      }
+      if (d.chain.length < 2) return;
+      const pairs = [];
+      for (let i = 0; i + 1 < d.chain.length; i++) {
+        const u = d.chain[i], v = d.chain[i + 1];
+        if (u !== v && this.owner[u] === this.me) pairs.push([u, v]);
+      }
+      if (pairs.length) this.orderPairs(pairs);
+      return;
+    }
+    if (h < 0) return;                                   // released on open ground: cancelled, nothing spent
     if (h === d.start && d.sources.size === 1) return;
     this.order([...d.sources], h);
   }
@@ -981,7 +1114,6 @@ export class GameView {
   /** My routes on the map: persistent orders and columns on the march, each as a line through view points. */
   myRoutes() {
     const out = [];
-    for (const r of this.autoRoutes()) if (r.path) out.push({ kind: 'auto', key: `a${r.src}`, src: r.src, dest: r.dest, pts: r.path.map(id => this.vn[id]) });
     for (const a of this.st.armies.values()) {
       if (a.o !== this.me || a.hx == null || a.st === 2 || a.st === 3 || (a.fl & HELD)) continue;
       out.push({ kind: 'march', key: `m${a.id}`, id: a.id, src: -1, dest: a.dest, n: a.n, pts: [{ x: a.hx, y: a.hy }, this.vn[a.to], ...a.path.map(id => this.vn[id])] });
@@ -1021,13 +1153,6 @@ export class GameView {
   cancelChips() {
     const list = (this.routeHover || []).slice();
     const has = key => list.some(c => c.key === key);
-    if (this.sel >= 0 && this.autos.has(this.sel) && this.owner[this.sel] === this.me && !has(`a${this.sel}`)) {
-      const r = this.autoRoutes().find(q => q.src === this.sel);
-      if (r && r.path && r.path.length > 1) {
-        const A = this.vn[r.path[0]], Z = this.vn[r.path[1]];
-        list.push({ kind: 'auto', key: `a${r.src}`, src: r.src, dest: r.dest, pts: r.path.map(id => this.vn[id]), x: (A.x + Z.x) / 2, y: (A.y + Z.y) / 2 - 16 });
-      }
-    }
     const a = this.selArmy >= 0 ? this.st.armies.get(this.selArmy) : null;
     if (a && a.hx != null && !(a.fl & HELD) && a.st !== 2 && a.st !== 3 && !has(`m${a.id}`)) {
       list.push({ kind: 'march', key: `m${a.id}`, id: a.id, dest: a.dest, n: a.n, pts: [{ x: a.hx, y: a.hy }, this.vn[a.to], ...a.path.map(id => this.vn[id])], x: a.hx + 26, y: a.hy - 30 });
@@ -1048,8 +1173,8 @@ export class GameView {
   cancelRoute(c) {
     if (this.paused) return this.hooks.notify('paused');
     this.routeHover = null;
-    if (c.kind === 'auto') this.hooks.auto([c.src], -1, 0, this.nextCmd++, true);
-    else { this.hooks.halt(c.id, this.nextCmd++); this.selArmy = c.id; }
+    this.hooks.halt(c.id, this.nextCmd++);
+    this.selArmy = c.id;
   }
 
   /** Send the picked column to city `id` from where it stands. */
@@ -1060,6 +1185,32 @@ export class GameView {
     if (!a) return;
     sfx.send();
     this.hooks.redirect(a.id, id, this.nextCmd++);
+  }
+
+  /**
+   * Issue multiple [src, dest] dispatch routes at once (chain drag a->b->c or rally/attack).
+   * When `replace` is true, all previous auto-dispatch routes of this player are overwritten.
+   */
+  orderPairs(pairs, replace = false) {
+    if (!this.canPlay() || !pairs.length) return false;
+    if (this.paused) { this.hooks.notify('paused'); return false; }
+    const valid = pairs.filter(([u, v]) => u !== v && this.owner[u] === this.me);
+    if (!valid.length) return false;
+    if (this.autoMode) {
+      sfx.send();
+      this.hooks.autoPairs(valid, this.pct, this.nextCmd++, replace);
+      return true;
+    }
+    // Single-dispatch mode: group pairs by destination and send.
+    const byDest = new Map();
+    for (const [u, v] of valid) {
+      let list = byDest.get(v);
+      if (!list) byDest.set(v, list = []);
+      list.push(u);
+    }
+    let any = false;
+    for (const [to, from] of byDest) if (this.order(from, to)) any = true;
+    return any;
   }
 
   /**
@@ -1076,11 +1227,9 @@ export class GameView {
     const mine = from.filter(s => s !== to && this.owner[s] === this.me);
     if (!mine.length) return false;
     if (this.autoMode) {
-      // Auto dispatch: the server keeps the order and sends from these cities again and again.
-      // The mode is for one order: it switches itself off once the destination is chosen.
+      // Auto dispatch (default): the server keeps the order and sends from these cities again and again.
       sfx.send();
       this.hooks.auto(mine, to, this.pct, this.nextCmd++);
-      this.setAutoMode(false);
       return true;
     }
     const plan = this.plan(mine, to);
@@ -1103,18 +1252,130 @@ export class GameView {
     if (this.hooks.onAutos) this.hooks.onAutos();
   }
 
+  setRallyMode(on) {
+    this.rallyMode = on === undefined ? !this.rallyMode : !!on;
+    this.shiftRally = false;
+    if (this.rallyMode) {
+      this.targeting = null;
+      this.drag = null;
+      if (this.sel >= 0 && !this.rallyTargets.size) { this.rallyTargets.add(this.sel); this.sel = -1; }
+    } else {
+      this.rallyTargets.clear();
+    }
+    if (this.hooks.onAutos) this.hooks.onAutos();
+  }
+
+  /** Auto-execute Shift-selected rally/attack targets as soon as Shift is released. */
+  onShiftUp() {
+    if (!this.shiftRally) return;
+    this.shiftRally = false;
+    if (this.rallyMode && this.rallyTargets.size > 0) this.confirmRally();
+  }
+
+  /** Compute optimal & evenly-distributed dispatch plan for the given target city ids. */
+  rallyPlan(targets) {
+    const nodes = this.map.nodes;
+    const mine = [];
+    for (let i = 0; i < this.N; i++) if (this.owner[i] === this.me) mine.push(i);
+    return planBalancedDispatch(
+      this.N,
+      u => this.adj[u],
+      (u, v) => Math.hypot(nodes[u][0] - nodes[v][0], nodes[u][1] - nodes[v][1]),
+      u => this.owner[u] === this.me,
+      u => Math.max(1, this.shown(u)) + (this.levels[this.level[u]] ? this.levels[this.level[u]].prod * 10 : 0),
+      mine,
+      targets,
+    );
+  }
+
+  /** Execute optimal rally/attack dispatch to one or more target cities, overwriting old routes. */
+  dispatchToTargets(targets) {
+    if (!this.canPlay() || !targets || !targets.length) return false;
+    if (this.paused) { this.hooks.notify('paused'); return false; }
+    const plan = this.rallyPlan(targets);
+    if (!plan.pairs.length) {
+      this.hooks.notify('rallyNoRoute');
+      return false;
+    }
+    const ok = this.orderPairs(plan.pairs, true);
+    if (ok) {
+      this.activeTargets = new Set(plan.reachableTargets);
+      if (plan.unreachableTargets.length) {
+        this.hooks.notify('rallyPartial', { ok: plan.reachableTargets.length, out: plan.unreachableTargets.length });
+      }
+    }
+    this.rallyMode = false;
+    this.shiftRally = false;
+    this.rallyTargets.clear();
+    if (this.hooks.onAutos) this.hooks.onAutos();
+    return ok;
+  }
+
+  /** Confirm the active rally/attack targets (or the currently selected city). */
+  confirmRally() {
+    const targets = this.rallyTargets.size ? [...this.rallyTargets] : this.sel >= 0 ? [this.sel] : [];
+    if (!targets.length) return false;
+    return this.dispatchToTargets(targets);
+  }
+
   /** The cities an auto-dispatch control acts on: the multi-selection, else the selected city. */
   chosen() {
     return this.picked.size ? [...this.picked] : this.sel >= 0 ? [this.sel] : [];
   }
 
-  /** Stop the persistent orders of the chosen cities. */
-  stopAuto() {
-    const list = this.chosen().filter(s => this.autos.has(s));
+  /** Stop all persistent orders of the given (or chosen) cities. */
+  stopAuto(ids) {
+    const list = (ids || this.chosen()).filter(s => this.hasAutoFrom(s));
     if (!list.length || !this.canPlay()) return false;
     if (this.paused) { this.hooks.notify('paused'); return false; }
     this.hooks.auto(list, -1, 0, this.nextCmd++, true);
     return true;
+  }
+
+  /** Stop dispatch along one specific road segment (u -> v). */
+  stopAutoSegment(u, v) {
+    if (!this.canPlay() || !this.autos.size) return false;
+    if (this.paused) { this.hooks.notify('paused'); return false; }
+    this.hooks.autoSegOff(u, v, this.nextCmd++);
+    return true;
+  }
+
+  /** Clickable "×" cancel button coordinates for every road segment with active auto dispatch. */
+  autoCancelPoints() {
+    if (this.me < 0 || !this.autos.size || !this.vn) return [];
+    const routes = this.autoRoutes();
+    const legs = new Map();
+    const addLeg = (u, v, state) => {
+      const key = `${u}|${v}`;
+      const prev = legs.get(key);
+      if (!prev) legs.set(key, { key, u, v, state });
+      else if (state === 0) prev.state = 0;
+    };
+    for (const r of routes) {
+      if (r.path && r.path.length >= 2) {
+        for (let i = 0; i + 1 < r.path.length; i++) addLeg(r.path[i], r.path[i + 1], r.state);
+      } else {
+        addLeg(r.src, r.dest, r.state);
+      }
+    }
+    const pts = [];
+    for (const leg of legs.values()) {
+      const A = this.vn[leg.u], B = this.vn[leg.v];
+      if (!A || !B) continue;
+      pts.push({ key: leg.key, u: leg.u, v: leg.v, state: leg.state, x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 });
+    }
+    return pts;
+  }
+
+  /** Auto-dispatch route whose "×" cancel button is under `p`, or null. */
+  autoCancelAt(p) {
+    if (!this.canPlay() || this.targeting || !this.autos.size) return null;
+    let best = null, bd = Math.max(13, 15 / this.s);
+    for (const pt of this.autoCancelPoints()) {
+      const d = Math.hypot(pt.x - p.x, pt.y - p.y);
+      if (d < bd) { bd = d; best = pt; }
+    }
+    return best;
   }
 
   /**
@@ -1125,10 +1386,10 @@ export class GameView {
     const key = `${this.autoRev}|${this.ownerRev}|${this.featRev}`;
     if (!this.autoPaths || this.autoPaths.key !== key) {
       const list = [];
-      for (const [src, o] of this.autos) {
-        if (this.owner[src] !== this.me) continue;
-        const r = this.routeTo(src, o.dest);
-        list.push({ src, dest: o.dest, state: o.state, path: r ? r.path : null });
+      for (const [k, o] of this.autos) {
+        if (this.owner[o.src] !== this.me) continue;
+        const r = this.routeTo(o.src, o.dest);
+        list.push({ key: k, src: o.src, dest: o.dest, state: o.state, path: r ? r.path : null });
       }
       this.autoPaths = { key, list };
     }
@@ -1234,8 +1495,12 @@ export class GameView {
     this.targeting = null;
     this.selArmy = -1;
     this.routeHover = null;
+    this.rallyMode = false;
+    this.shiftRally = false;
+    if (this.rallyTargets) this.rallyTargets.clear();
     this.sel = -1;
     if (this.picked) this.picked.clear();
+    if (this.hooks.onAutos) this.hooks.onAutos();
   }
 
   // ------------------------------------------------------------ rendering
@@ -1303,9 +1568,11 @@ export class GameView {
     this.drawPortals(ctx, t);
     this.drawGuide(ctx, lt);
     this.drawAutoBadges(ctx, lt);
+    this.drawAutoCancels(ctx);
     this.drawRejects(ctx, lt);
     this.drawShots(ctx, lt);
     this.drawFx(ctx, lt);
+    this.drawRallyPreview(ctx, lt);
     this.drawDrag(ctx, lt);
     this.drawTargeting(ctx, lt);
     this.drawChips(ctx, lt);
@@ -1323,6 +1590,7 @@ export class GameView {
     }
     if (lt - this.hudAt > 0.25) { this.hudAt = lt; this.updateHud(); }
     this.placeUpgrade();
+    this.placeCityActions();
     this.updateInfo();
   }
 
@@ -2013,6 +2281,64 @@ export class GameView {
     if (!d || !d.moved) return;
     const col = this.color(this.me);
     d.via = null;
+
+    if (d.mode === 'chain') {
+      // Continuous chain preview: a -> b -> c -> ...
+      const chain = d.chain;
+      d.via = new Set(chain);
+      for (let i = 0; i + 1 < chain.length; i++) {
+        const u = chain[i], v = chain[i + 1];
+        const r = this.routeTo(u, v);
+        if (r && r.path.length >= 2) {
+          for (let j = 0; j + 1 < r.path.length; j++) {
+            const A = this.vn[r.path[j]], Z = this.vn[r.path[j + 1]];
+            const len = Math.hypot(Z.x - A.x, Z.y - A.y) || 1;
+            const ux = (Z.x - A.x) / len, uy = (Z.y - A.y) / len;
+            const isEnd = i + 2 === chain.length && j + 2 === r.path.length;
+            this.arrow(ctx, A.x + ux * (this.R + 6), A.y + uy * (this.R + 6), Z.x - ux * (this.R + 12), Z.y - uy * (this.R + 12),
+              5, isEnd ? '#ffffff' : col.light, lt, isEnd ? 1.2 : 0.95);
+          }
+        } else {
+          const A = this.vn[u], Z = this.vn[v];
+          ctx.strokeStyle = '#ffb347'; ctx.lineWidth = 2.6; ctx.setLineDash([5, 7]);
+          ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(Z.x, Z.y); ctx.stroke(); ctx.setLineDash([]);
+        }
+      }
+      if (chain.length >= 2) {
+        for (let i = 0; i < chain.length; i++) {
+          const n = this.vn[chain[i]];
+          ctx.fillStyle = 'rgba(10,12,13,.92)';
+          ctx.beginPath(); ctx.arc(n.x - 24, n.y - this.topOf(chain[i]) - 6, 9, 0, TAU); ctx.fill();
+          ctx.strokeStyle = i === chain.length - 1 ? '#ffffff' : col.light;
+          ctx.lineWidth = 1.6;
+          ctx.stroke();
+          ctx.font = `700 11px ${FONT}`;
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#ffffff';
+          ctx.fillText(String(i + 1), n.x - 24, n.y - this.topOf(chain[i]) - 5.5);
+        }
+      }
+      const tail = chain[chain.length - 1];
+      const tailNode = this.vn[tail];
+      if (this.owner[tail] === this.me && this.nodeAt({ x: d.px, y: d.py }) !== tail) {
+        const len = Math.hypot(d.px - tailNode.x, d.py - tailNode.y);
+        if (len >= this.R + 10) {
+          const ux = (d.px - tailNode.x) / len, uy = (d.py - tailNode.y) / len;
+          this.arrow(ctx, tailNode.x + ux * (this.R + 6), tailNode.y + uy * (this.R + 6), d.px, d.py, 4, col.light, lt);
+        }
+      }
+      if (chain.length >= 2) {
+        const by = tailNode.y - this.topOf(tail) - 18;
+        if (chain.length > 2) {
+          this.badge(ctx, tailNode.x, by, t('game.chainBadge', { count: chain.length, hops: chain.length - 1 }), '#1f6f8f');
+        } else if (this.autoMode) {
+          this.badge(ctx, tailNode.x, by, t('game.auto.badge', { count: 1 }), '#1f6f8f');
+        } else {
+          this.badge(ctx, tailNode.x, by, t('game.orderBadge', { count: 1, troops: this.dispatchCount(chain[0]) }), col.main);
+        }
+      }
+      return;
+    }
+
     if (d.target < 0) {                                  // no destination yet: plain arrows to the pointer
       let total = 0;
       for (const s of d.sources) {
@@ -2078,6 +2404,46 @@ export class GameView {
     if (plan.out.length > full && !this.autoMode) this.badge(ctx, tgt.x, by - up, t('game.orderOut', { count: plan.out.length - full }), '#b3261e');
   }
 
+  /** Live preview of optimal evenly-distributed rally/attack routes when picking targets. */
+  drawRallyPreview(ctx, lt) {
+    if (!this.rallyMode || !this.rallyTargets.size || !this.canPlay()) return;
+    const targets = [...this.rallyTargets];
+    const plan = this.rallyPlan(targets);
+    const col = this.color(this.me);
+    const legs = new Map();
+    for (const r of plan.routes) {
+      for (let i = 0; i + 1 < r.path.length; i++) {
+        const key = r.path[i] * 1000 + r.path[i + 1];
+        legs.set(key, (legs.get(key) || 0) + 1);
+      }
+    }
+    for (const [key, n] of legs) {
+      const u = Math.floor(key / 1000), v = key % 1000;
+      const A = this.vn[u], Z = this.vn[v];
+      const len = Math.hypot(Z.x - A.x, Z.y - A.y) || 1;
+      const ux = (Z.x - A.x) / len, uy = (Z.y - A.y) / len;
+      const isTgt = this.rallyTargets.has(v);
+      const arrowCol = isTgt ? (this.owner[v] === this.me ? '#7fd0ff' : '#ff8a65') : col.light;
+      this.arrow(ctx, A.x + ux * (this.R + 6), A.y + uy * (this.R + 6), Z.x - ux * (this.R + 12), Z.y - uy * (this.R + 12),
+        Math.min(7.5, 3 + n * 1.2), arrowCol, lt, isTgt ? 1.2 : 0.85);
+    }
+    for (const id of targets) {
+      const n = this.vn[id];
+      const reach = plan.reachableTargets.includes(id);
+      const isRally = this.owner[id] === this.me;
+      const ringCol = !reach ? '#ff5a4d' : isRally ? '#6fd0f2' : '#ff6b4a';
+      ctx.strokeStyle = ringCol;
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.ellipse(n.x, n.y + 1, this.R + 13, (this.R + 13) * F + 2, 0, 0, TAU); ctx.stroke();
+      if (!reach) this.cross(ctx, n.x, n.y - this.topOf(id) - 14);
+    }
+    if (plan.routes.length) {
+      const anchor = this.vn[plan.reachableTargets[0]];
+      this.badge(ctx, anchor.x, anchor.y - this.topOf(plan.reachableTargets[0]) - 22,
+        t('game.rallyBadge', { routes: plan.routes.length, targets: plan.reachableTargets.length }), '#1f6f8f');
+    }
+  }
+
   /**
    * Where my routed armies are going: a faint line along the roads still
    * ahead of each and a marker over the final destination, so a column
@@ -2115,49 +2481,163 @@ export class GameView {
   }
 
   /**
-   * My persistent orders on the ground: a quiet dotted line along each planned
-   * route, dimmer than a march, with a small ring on the destination.
+   * My persistent orders on the ground: high-contrast directional lanes with dark
+   * underlays, flowing chevrons, destination arrowheads and opposing-lane separation.
    */
   drawAutoRoutes(ctx, lt) {
     if (this.me < 0 || !this.autos.size) return;
     const col = this.color(this.me);
-    const move = this.paused ? 0 : lt * 14;
-    ctx.lineWidth = 1.6;
-    ctx.setLineDash([2, 7]);
-    ctx.lineDashOffset = -move;
-    const dests = new Set();
-    for (const r of this.autoRoutes()) {
-      if (!r.path) continue;
-      ctx.strokeStyle = col.light;
-      ctx.globalAlpha = r.state === 0 ? 0.5 : 0.25;
+    const routes = this.autoRoutes();
+    const move = this.paused ? 0 : lt * 34;
+
+    // Track directed legs so opposite routes on the same road split into two side-by-side lanes.
+    const directedLegs = new Set();
+    for (const r of routes) {
+      if (r.path && r.path.length >= 2) {
+        for (let i = 0; i + 1 < r.path.length; i++) directedLegs.add(`${r.path[i]}|${r.path[i + 1]}`);
+      } else {
+        directedLegs.add(`${r.src}|${r.dest}`);
+      }
+    }
+
+    const drawChevron = (x, y, ux, uy, size, color, alpha) => {
+      const bx = x - ux * size, by = y - uy * size;
+      const wx = -uy * size * 0.72, wy = ux * size * 0.72;
+      ctx.globalAlpha = Math.min(1, alpha * 0.9);
+      ctx.strokeStyle = 'rgba(8,10,12,.78)';
+      ctx.lineWidth = 4;
       ctx.beginPath();
-      r.path.forEach((id, i) => { const n = this.vn[id]; if (i && !this.isWarp(r.path[i - 1], id)) ctx.lineTo(n.x, n.y); else ctx.moveTo(n.x, n.y); });
+      ctx.moveTo(bx + wx, by + wy); ctx.lineTo(x, y); ctx.lineTo(bx - wx, by - wy);
       ctx.stroke();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.1;
+      ctx.beginPath();
+      ctx.moveTo(bx + wx, by + wy); ctx.lineTo(x, y); ctx.lineTo(bx - wx, by - wy);
+      ctx.stroke();
+    };
+
+    const drawHead = (x, y, ux, uy, size, color, alpha) => {
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = color;
+      ctx.strokeStyle = 'rgba(8,10,12,.82)';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(x + ux * size * 0.55, y + uy * size * 0.55);
+      ctx.lineTo(x - ux * size * 0.75 - uy * size * 0.65, y - uy * size * 0.75 + ux * size * 0.65);
+      ctx.lineTo(x - ux * size * 0.75 + uy * size * 0.65, y - uy * size * 0.75 - ux * size * 0.65);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    };
+
+    const drawLeg = (u, v, color, alpha, hot, isFinal) => {
+      const A = this.vn[u], B = this.vn[v];
+      if (!A || !B || this.isWarp(u, v)) return;         // a hop through my wormhole is not a road
+      const dx = B.x - A.x, dy = B.y - A.y, len = Math.hypot(dx, dy);
+      if (len < 12) return;
+      const ux = dx / len, uy = dy / len;
+      const opp = directedLegs.has(`${v}|${u}`);
+      const off = opp ? 4.5 : 0;
+      const ox = -uy * off, oy = ux * off;
+      const start = Math.min(len * 0.25, this.R + 8);
+      const end = Math.max(start + 8, len - (isFinal ? this.R + 13 : this.R + 8));
+      const x0 = A.x + ux * start + ox, y0 = A.y + uy * start + oy;
+      const x1 = A.x + ux * end + ox, y1 = A.y + uy * end + oy;
+
+      // Dark casing so the route reads cleanly on any terrain or road surface.
+      ctx.setLineDash([]);
+      ctx.globalAlpha = alpha * 0.68;
+      ctx.strokeStyle = 'rgba(8,10,12,.85)';
+      ctx.lineWidth = hot ? 5.8 : 4.4;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+
+      // Animated dashed core.
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = hot ? 3.2 : 2.3;
+      ctx.setLineDash([10, 8]);
+      ctx.lineDashOffset = -move;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Flowing directional chevrons along the leg.
+      const step = 52;
+      const phase = ((move % step) + step) % step;
+      for (let d = start + phase; d < end - 14; d += step) {
+        if (d < start + 10) continue;
+        drawChevron(A.x + ux * d + ox, A.y + uy * d + oy, ux, uy, hot ? 6.5 : 5.5, hot ? '#ffffff' : color, Math.min(1, alpha + 0.12));
+      }
+
+      // Solid arrowhead at the end of the final leg pointing directly into the destination.
+      if (isFinal) {
+        drawHead(x1, y1, ux, uy, hot ? 10.5 : 9, hot ? '#ffffff' : color, Math.min(1, alpha + 0.12));
+      }
+    };
+
+    const dests = new Set();
+    const legs = new Map();
+    const addLeg = (u, v, blocked, state, isFinal) => {
+      const key = `${u}|${v}`;
+      const prev = legs.get(key);
+      if (!prev) legs.set(key, { key, u, v, blocked, state, isFinal });
+      else {
+        if (!blocked) prev.blocked = false;
+        if (state === 0) prev.state = 0;
+        if (isFinal) prev.isFinal = true;
+      }
+    };
+    for (const r of routes) {
+      if (!r.path || r.path.length < 2) {
+        addLeg(r.src, r.dest, true, r.state, true);
+      } else {
+        for (let i = 0; i + 1 < r.path.length; i++) {
+          addLeg(r.path[i], r.path[i + 1], false, r.state, i + 2 === r.path.length);
+        }
+      }
       dests.add(r.dest);
     }
+    for (const leg of legs.values()) {
+      const hot = this.hoverCancel === leg.key;
+      const color = hot ? '#ff5a4d' : leg.blocked ? '#ffb347' : col.light;
+      const alpha = hot ? 0.98 : leg.blocked ? 0.55 : (leg.state === 0 ? 0.86 : 0.48);
+      drawLeg(leg.u, leg.v, color, alpha, hot, leg.isFinal);
+    }
+
     ctx.setLineDash([]);
-    ctx.globalAlpha = 0.7;
-    ctx.strokeStyle = col.light;
     for (const id of dests) {
       const n = this.vn[id];
-      ctx.beginPath(); ctx.ellipse(n.x, n.y, this.R + 5, (this.R + 5) * F, 0, 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 0.55;
+      ctx.strokeStyle = 'rgba(8,10,12,.85)';
+      ctx.lineWidth = 4.2;
+      ctx.beginPath(); ctx.ellipse(n.x, n.y, this.R + 6, (this.R + 6) * F, 0, 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 0.88;
+      ctx.strokeStyle = col.light;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(n.x, n.y, this.R + 6, (this.R + 6) * F, 0, 0, TAU); ctx.stroke();
     }
     ctx.globalAlpha = 1;
   }
 
   /**
-   * A badge on every city of mine with a persistent order: a turning arrow while it is
-   * sending, and a plain sign of what it is waiting for otherwise.
+   * A badge on every city of mine with one or more persistent orders.
    *   0 active   1 waiting for troops   2 no route   3 under attack   (paused: the whole match)
    */
   drawAutoBadges(ctx, lt) {
     if (this.me < 0 || !this.autos.size) return;
     const col = this.color(this.me);
-    for (const [src, o] of this.autos) {
-      if (this.owner[src] !== this.me) continue;
+    const bySrc = new Map();
+    for (const o of this.autos.values()) {
+      if (this.owner[o.src] !== this.me) continue;
+      let g = bySrc.get(o.src);
+      if (!g) bySrc.set(o.src, g = { count: 0, state: o.state });
+      g.count++;
+      if (o.state === 0 || g.state > o.state) g.state = Math.min(g.state, o.state);
+    }
+    for (const [src, info] of bySrc) {
       const n = this.vn[src];
       const x = n.x + 30, y = n.y - this.topOf(src) - 4;
-      const state = this.paused ? 5 : o.state;
+      const state = this.paused ? 5 : info.state;
       const ring = ['#ffffff', '#9aa3ab', '#ffb347', '#ff5a4d', '#ff8a5c', '#ffffff'][state];
       ctx.fillStyle = 'rgba(10,12,13,.9)';
       ctx.beginPath(); ctx.arc(x, y, 9, 0, TAU); ctx.fill();
@@ -2185,6 +2665,34 @@ export class GameView {
         ctx.lineTo(hx + Math.cos(a1 - 1.3) * 3.4, hy + Math.sin(a1 - 1.3) * 3.4);
         ctx.closePath(); ctx.fill();
       }
+      if (info.count > 1) {
+        ctx.fillStyle = '#1f6f8f';
+        ctx.beginPath(); ctx.arc(x + 8, y - 7, 6, 0, TAU); ctx.fill();
+        ctx.font = `700 9px ${FONT}`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#ffffff';
+        ctx.fillText(String(info.count), x + 8, y - 6.5);
+      }
+    }
+  }
+
+  /** A clickable "×" button on every active auto-dispatch route to cancel it. */
+  drawAutoCancels(ctx) {
+    if (!this.canPlay() || !this.autos.size) return;
+    for (const pt of this.autoCancelPoints()) {
+      const hot = this.hoverCancel === pt.key;
+      const r = hot ? 10 : 8.5;
+      ctx.fillStyle = hot ? 'rgba(195,42,34,.95)' : 'rgba(10,12,13,.9)';
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, r, 0, TAU); ctx.fill();
+      ctx.strokeStyle = hot ? '#ffffff' : '#ff5a4d';
+      ctx.lineWidth = hot ? 2 : 1.6;
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, r, 0, TAU); ctx.stroke();
+      const s = r * 0.42;
+      ctx.strokeStyle = hot ? '#ffffff' : '#ff8a80';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(pt.x - s, pt.y - s); ctx.lineTo(pt.x + s, pt.y + s);
+      ctx.moveTo(pt.x + s, pt.y - s); ctx.lineTo(pt.x - s, pt.y + s);
+      ctx.stroke();
     }
   }
 
@@ -2412,6 +2920,54 @@ export class GameView {
     b.style.top = `${Math.max(88, sy)}px`;
   }
 
+  /** Floating rally/attack quick buttons shown when hovering over any building. */
+  placeCityActions() {
+    const box = this.els.cityActions;
+    if (!box) return;
+    if (!this.canPlay() || this.drag || this.targeting || this.hoverCancel || this.rallyMode) {
+      box.classList.add('hidden');
+      this.cityActTarget = -1;
+      this.cityActSig = '';
+      return;
+    }
+    const now = performance.now();
+    let i = this.hover;
+    if (i < 0 && (this.hoverMenu || now < this.hoverKeepUntil) && this.hoverCity >= 0 && this.hoverCity < this.N) {
+      i = this.hoverCity;
+    }
+    if (i < 0) {
+      box.classList.add('hidden');
+      this.cityActTarget = -1;
+      this.cityActSig = '';
+      return;
+    }
+    this.cityActTarget = i;
+    const friendly = this.owner[i] === this.me;
+    const canRemove = this.activeTargets.has(i) && this.activeTargets.size > 1;
+    const sig = `${i}|${friendly ? 1 : 0}|${canRemove ? 1 : 0}|${getLang()}`;
+    if (sig !== this.cityActSig) {
+      this.cityActSig = sig;
+      const onlyBtn = box.querySelector('#ca-only');
+      const addBtn = box.querySelector('#ca-add');
+      if (onlyBtn) {
+        onlyBtn.textContent = t(friendly ? 'hud.rallyOnly' : 'hud.attackOnly');
+        onlyBtn.className = `btn tiny ${friendly ? 'rally' : 'attack'}`;
+      }
+      if (addBtn) {
+        addBtn.textContent = t(canRemove ? 'hud.targetRemove' : (friendly ? 'hud.rallyAdd' : 'hud.attackAdd'));
+        addBtn.className = `btn tiny ${canRemove ? 'remove' : (friendly ? 'extra' : 'extra attack')}`;
+      }
+    }
+    box.classList.remove('hidden');
+    const n = this.vn[i];
+    const half = box.offsetWidth / 2 + 6;
+    const sx = this.ox + n.x * this.s;
+    const upShown = !this.els.upgrade.classList.contains('hidden') && this.sel === i;
+    const sy = this.oy + (n.y - this.topOf(i) - 18) * this.s - (upShown ? 38 : 0);
+    box.style.left = `${Math.max(half, Math.min(this.cv.clientWidth - half, sx))}px`;
+    box.style.top = `${Math.max(88, sy)}px`;
+  }
+
   /** Details card for the selected (or hovered) city. */
   updateInfo() {
     const el = this.els.info;
@@ -2421,11 +2977,12 @@ export class GameView {
       return;
     }
     const o = this.owner[i], lv = this.level[i], ruin = this.isRuin(i);
-    const au = o === this.me ? this.autos.get(i) : null;
+    const aus = o === this.me ? this.autosFrom(i) : [];
+    const auSig = aus.map(a => `${a.dest},${a.pct},${this.paused ? 5 : a.state}`).join(';');
     const inc = o === this.me ? this.incoming(i) : 0;
     const emps = this.featBy.emp.get(i) || [];
     const rb = this.featBy.rebuild.get(i);
-    const sig = `${i}|${o}|${lv}|${this.units[i]}|${this.st.power[i]}|${getLang()}|${ruin ? 1 : 0}|${inc}|${this.featRev}|${rb ? Math.ceil(rb.u - this.serverNow()) : ''}|${au ? `${au.dest},${au.pct},${this.paused ? 5 : au.state}` : ''}`;
+    const sig = `${i}|${o}|${lv}|${this.units[i]}|${this.st.power[i]}|${getLang()}|${ruin ? 1 : 0}|${inc}|${this.featRev}|${rb ? Math.ceil(rb.u - this.serverNow()) : ''}|${auSig}`;
     if (sig === this.infoSig) return;
     this.infoSig = sig;
     const L = this.levels[lv], cap = this.capOf(i), u = this.units[i];
@@ -2468,7 +3025,7 @@ export class GameView {
       el.append(mk('p', 'info-desc', t(`levels.${lv}.desc`)), mk('p', 'info-note', t('info.idle')));
     }
     for (const e of emps) el.append(mk('p', 'info-auto', t('info.emplacement', { name: t(`features.${e.k}`), who: this.pname(e.p), s: Math.max(0, Math.ceil(e.u - this.serverNow())) })));
-    if (au) el.append(mk('p', 'info-auto', t('game.auto.info', { pct: Math.round(au.pct * 100), state: t(`game.auto.state.${this.paused ? 5 : au.state}`) })));
+    for (const au of aus) el.append(mk('p', 'info-auto', t('game.auto.info', { pct: Math.round(au.pct * 100), state: t(`game.auto.state.${this.paused ? 5 : au.state}`) })));
     el.append(stats);
     el.classList.remove('hidden');
   }

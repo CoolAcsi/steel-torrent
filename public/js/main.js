@@ -30,7 +30,7 @@ const state = {
   wasIdle: false,    // whether I am currently flagged idle in the lobby (to warn once per time)
 };
 
-const view = new GameView($('cv'), { hud: $('hud-players'), upgrade: $('btn-upgrade'), info: $('info'), gl: $('gl') }, {
+const view = new GameView($('cv'), { hud: $('hud-players'), upgrade: $('btn-upgrade'), cityActions: $('city-actions'), info: $('info'), gl: $('gl') }, {
   send: (from, to, pct, id) => send({ t: 'send', from, to, pct, id }),
   skill: (slot, args, id) => send({ t: 'skill', slot, args, id }),
   // Announce superweapons from anyone, and my own casts.
@@ -42,6 +42,8 @@ const view = new GameView($('cv'), { hud: $('hud-players'), upgrade: $('btn-upgr
   upgrade: node => (view.paused ? toast(t('game.paused')) : send({ t: 'up', node })),
   // Persistent orders: set (or, with `off`, stop) auto dispatch for these cities. The server keeps and runs them.
   auto: (from, to, pct, id, off) => send({ t: 'auto', from, to, pct, id, off: off || undefined }),
+  autoPairs: (pairs, pct, id, replace) => send({ t: 'auto', pairs, pct, id, replace: replace || undefined }),
+  autoSegOff: (segFrom, segTo, id) => send({ t: 'auto', off: true, segFrom, segTo, id }),
   onCtl: (c, was) => {
     syncCtl();
     if (c.paused !== was.paused && view.active) toast(c.paused ? t('game.pausedBy', { name: c.by || '' }) : t('game.resumed'));
@@ -977,6 +979,7 @@ $('ov-leave').onclick = () => send({ t: 'leave' });
 function setPct(v) {
   view.pct = v;
   for (const b of $('pct').querySelectorAll('button')) b.classList.toggle('on', Number(b.dataset.pct) === v);
+  if (view.active && view.canPlay()) send({ t: 'auto', setPct: true, pct: v });
 }
 for (const b of $('pct').querySelectorAll('button')) b.onclick = () => setPct(Number(b.dataset.pct));
 
@@ -1036,15 +1039,35 @@ $('speed').onchange = () => setSpeed(Number($('speed').value));
 function syncAuto() {
   const b = $('btn-auto');
   b.classList.toggle('on', view.autoMode);
-  b.querySelector('span').textContent = t(view.autoMode ? 'hud.autoPick' : 'hud.auto');
-  const n = view.map ? view.chosen().filter(s => view.autos.has(s)).length : 0;
+  b.querySelector('span').textContent = t(view.autoMode ? 'hud.auto' : 'hud.autoPick');
+  const n = view.map ? view.chosen().filter(s => view.hasAutoFrom(s)).length : 0;
   const stop = $('btn-auto-stop');
   stop.classList.toggle('hidden', !n);
   if (n) stop.textContent = t('hud.autoStop', { count: n });
+
+  const rb = $('btn-rally');
+  rb.classList.toggle('on', view.rallyMode);
+  rb.querySelector('span').textContent = t(view.rallyMode ? 'hud.rallyPick' : 'hud.rally');
+  const go = $('btn-rally-go');
+  const canPlay = view.map && view.canPlay();
+  if (canPlay && view.rallyMode && view.rallyTargets.size > 0) {
+    go.classList.remove('hidden');
+    go.classList.toggle('attack', [...view.rallyTargets].some(id => view.owner[id] !== view.me));
+    go.textContent = t('hud.rallyGo', { count: view.rallyTargets.size });
+  } else if (canPlay && !view.rallyMode && view.sel >= 0) {
+    const isRally = view.owner[view.sel] === view.me;
+    go.classList.remove('hidden');
+    go.classList.toggle('attack', !isRally);
+    go.textContent = t(isRally ? 'hud.rallyHere' : 'hud.attackHere');
+  } else {
+    go.classList.add('hidden');
+  }
 }
 $('btn-auto').onclick = () => view.setAutoMode();
 $('btn-auto-stop').onclick = () => view.stopAuto();
-setInterval(() => { if (view.active) syncAuto(); }, 250);     // the stop button follows the selection
+$('btn-rally').onclick = () => view.setRallyMode();
+$('btn-rally-go').onclick = () => view.confirmRally();
+setInterval(() => { if (view.active) syncAuto(); }, 250);     // the stop/rally buttons follow the selection
 
 // ---------------------------------------------------------------- keyboard
 // Every match command has a key. H (or ?) lists them in-game.
@@ -1084,6 +1107,8 @@ window.addEventListener('keydown', e => {
   if (key === 's') return view.sendToHover();
   if (key === 'a') return view.pickAll();
   if (key === 'r') return view.setAutoMode();
+  if (key === 'g') return view.setRallyMode();
+  if (key === 'Enter' && (view.rallyMode || view.sel >= 0)) return view.confirmRally();
   if (key === 'Delete' || key === 'Backspace') return view.stopAuto();
   if (key === 'p') return togglePause();
   if (key === '+' || key === '=') return view.zoomBy(1.25);
@@ -1103,6 +1128,8 @@ window.addEventListener('keydown', e => {
     if (view.paused) toast(t('game.paused')); else send({ t: 'up', node: view.sel });
   }
 });
+window.addEventListener('keyup', e => { if (e.key === 'Shift') view.onShiftUp(); });
+window.addEventListener('blur', () => { view.shiftRally = false; });
 
 function syncSfxLabel() {
   const b = $('btn-sfx');

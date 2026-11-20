@@ -314,7 +314,8 @@ class Game {
     this.nextOrder = 1;     // one per accepted dispatch command, shared by every army it created
     this.paused = false;    // a paused match does not advance and accepts no orders
     this.ownerRev = 0;      // counts city captures: routes are only planned again when this moves
-    this.autos = new Map(); // source city -> persistent order { owner, dest, pct, next, state }
+    this.autos = new Map(); // autoKey(src, dest) -> persistent order { src, owner, dest, pct, next, state }
+    this.autoRR = new Map();// source city -> round-robin offset when parallel routes share limited troops
     this.emps = [];         // temporary emplacements beside bases (turret, slow, psi)
     this.obst = [];         // obstacles on roads (block, mire)
     this.worms = [];        // open wormholes
@@ -431,10 +432,10 @@ class Game {
    * the ones that sent troops from it and `prev`'s own orders that sent troops to it.
    */
   dropAutos(c, prev) {
-    for (const [src, o] of [...this.autos]) {
-      if (src !== c.id && !(o.dest === c.id && o.owner === prev)) continue;
-      this.autos.delete(src);
-      this.outEvents.push({ k: 'auto', p: o.owner, src, why: src === c.id ? 'lost' : 'dest' });
+    for (const [key, o] of [...this.autos]) {
+      if (o.src !== c.id && !(o.dest === c.id && o.owner === prev)) continue;
+      this.autos.delete(key);
+      this.outEvents.push({ k: 'auto', p: o.owner, src: o.src, why: o.src === c.id ? 'lost' : 'dest' });
     }
   }
 
@@ -728,10 +729,42 @@ class Game {
 
   // -------------------------------------------------- persistent orders
 
+  autoKey(src, dest) { return src * 10000 + dest; }
+
+  /** Directed road segments `[u, v]` traversed by player `pi`'s route from `src` to `dest`. */
+  autoLegs(pi, src, dest) {
+    const r = this.route(pi, src, dest);
+    const legs = [];
+    if (r && r.path.length >= 2) {
+      for (let i = 0; i + 1 < r.path.length; i++) legs.push([r.path[i], r.path[i + 1]]);
+    } else if (this.adj[src] && this.adj[src].has(dest)) {
+      legs.push([src, dest]);
+    }
+    return legs;
+  }
+
+  /**
+   * Enforce one-way-per-road-segment for player `pi`: any existing persistent order
+   * traversing a road segment in the opposite direction of `src -> dest` is overwritten.
+   */
+  clearOppositeAutos(pi, src, dest) {
+    const legs = this.autoLegs(pi, src, dest);
+    if (!legs.length) return;
+    const opp = new Set(legs.map(([u, v]) => `${v}|${u}`));
+    const selfKey = this.autoKey(src, dest);
+    for (const [key, o] of [...this.autos]) {
+      if (o.owner !== pi || key === selfKey) continue;
+      if (this.autoLegs(pi, o.src, o.dest).some(([u, v]) => opp.has(`${u}|${v}`))) {
+        this.autos.delete(key);
+      }
+    }
+  }
+
   /**
    * Tell cities to keep sending `pct` of their garrison to `toId` until told to stop.
-   * One order per source: a new one replaces the old. A destination that cannot be
-   * reached right now is accepted and the order waits, blocked, for a route.
+   * Multiple routes from the same source city can run in parallel (keyed by src + dest),
+   * while each road segment only carries one dispatch direction (newer orders overwrite opposite ones).
+   * A destination that cannot be reached right now is accepted and waits, blocked, for a route.
    * Returns per-source results like send(): [city, 1] accepted, [city, -reason] rejected.
    */
   setAuto(pi, fromIds, toId, pct, cmdId) {
@@ -745,26 +778,130 @@ class Game {
       const src = this.nodes[id];
       if (id === toId) { out.push([id, -REJECT.isTarget]); continue; }
       if (!src || src.owner !== pi) { out.push([id, -REJECT.notYours]); continue; }
-      this.autos.set(id, { owner: pi, dest: toId, pct, next: this.t, state: AUTO.active });
+      this.clearOppositeAutos(pi, id, toId);
+      this.autos.set(this.autoKey(id, toId), { src: id, owner: pi, dest: toId, pct, next: this.t, state: AUTO.active });
       out.push([id, 1]);
     }
     this.remember(p, cmdId, out);
     return out;
   }
 
-  /** Stop the persistent orders of these cities. Armies already marching keep their own orders. */
-  clearAuto(pi, fromIds, cmdId) {
+  /**
+   * Atomically set multiple [src, dest] persistent routes (used for chain drag a->b->c
+   * and multi-target rally/attack scheduling). When `replace` is true, all previous
+   * persistent routes of player `pi` are cleared first before installing the new ones.
+   * Each road segment only carries one dispatch direction; newer routes overwrite opposite ones.
+   * Returns [[src, 1 | -reason], ...].
+   */
+  setAutoPairs(pi, pairs, pct, cmdId, replace = false) {
+    const out = [];
+    if (this.winner !== null || !this.alive[pi] || !Array.isArray(pairs)) return out;
+    if (this.paused) { out.paused = true; return out; }
+    const p = this.players[pi];
+    if (!this.fresh(pi, cmdId)) { out.dup = true; return (cmdId != null && p.results.get(cmdId)) || out; }
+    if (replace) {
+      for (const [key, o] of [...this.autos]) {
+        if (o.owner === pi) {
+          this.autos.delete(key);
+          this.autoRR.delete(o.src);
+        }
+      }
+    }
+    pct = Math.max(0.05, Math.min(1, Number(pct) || 0.5));
+    const seen = new Set();
+    for (const pair of pairs.slice(0, 128)) {
+      if (!Array.isArray(pair) || pair.length < 2) continue;
+      const id = pair[0] | 0, toId = pair[1] | 0;
+      const key = this.autoKey(id, toId);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const src = this.nodes[id], dst = this.nodes[toId];
+      if (!dst) continue;
+      if (id === toId) { out.push([id, -REJECT.isTarget]); continue; }
+      if (!src || src.owner !== pi) { out.push([id, -REJECT.notYours]); continue; }
+      this.clearOppositeAutos(pi, id, toId);
+      this.autos.set(key, { src: id, owner: pi, dest: toId, pct, next: this.t, state: AUTO.active });
+      out.push([id, 1]);
+    }
+    this.remember(p, cmdId, out);
+    return out;
+  }
+
+  /**
+   * Stop persistent orders of these cities. If `toId >= 0`, stops only the specific route
+   * (src -> toId); otherwise stops all persistent routes starting at each city in `fromIds`.
+   * Armies already marching keep their own orders.
+   */
+  clearAuto(pi, fromIds, cmdId, toId = -1) {
     const out = [];
     if (this.winner !== null || !Array.isArray(fromIds)) return out;
     if (this.paused) { out.paused = true; return out; }
     const p = this.players[pi];
     if (!this.fresh(pi, cmdId)) { out.dup = true; return (cmdId != null && p.results.get(cmdId)) || out; }
+    const specific = Number.isInteger(toId) && toId >= 0;
     for (const id of new Set(fromIds.slice(0, this.nodes.length))) {
-      const o = this.autos.get(id);
-      if (o && o.owner === pi) { this.autos.delete(id); out.push([id, 1]); } else out.push([id, -REJECT.notYours]);
+      if (specific) {
+        const key = this.autoKey(id, toId);
+        const o = this.autos.get(key);
+        if (o && o.owner === pi) { this.autos.delete(key); out.push([id, 1]); }
+        else out.push([id, -REJECT.notYours]);
+      } else {
+        let removed = 0;
+        for (const [key, o] of [...this.autos]) {
+          if (o.src === id && o.owner === pi) { this.autos.delete(key); removed++; }
+        }
+        if (removed) out.push([id, 1]); else out.push([id, -REJECT.notYours]);
+      }
     }
     this.remember(p, cmdId, out);
     return out;
+  }
+
+  /**
+   * Cancel dispatch along a specific directed road segment `u -> v` for player `pi`.
+   * Orders starting at `u` along `u -> v` are removed; multi-hop orders passing through
+   * `u -> v` are truncated to stop at `u` so upstream segments remain intact.
+   */
+  clearAutoSegment(pi, u, v, cmdId) {
+    const out = [];
+    if (this.winner !== null || !this.alive[pi]) return out;
+    if (this.paused) { out.paused = true; return out; }
+    const p = this.players[pi];
+    if (!this.fresh(pi, cmdId)) { out.dup = true; return (cmdId != null && p.results.get(cmdId)) || out; }
+    const removed = [];
+    for (const [key, o] of [...this.autos]) {
+      if (o.owner !== pi) continue;
+      const legs = this.autoLegs(pi, o.src, o.dest);
+      const hit = legs.some(([a, b]) => a === u && b === v) || (!legs.length && o.src === u && o.dest === v);
+      if (!hit) continue;
+      this.autos.delete(key);
+      removed.push(o);
+      out.push([o.src, 1]);
+    }
+    for (const o of removed) {
+      if (o.src !== u && this.nodes[u] && this.nodes[u].owner === pi) {
+        const keepKey = this.autoKey(o.src, u);
+        if (!this.autos.has(keepKey)) {
+          this.autos.set(keepKey, { src: o.src, owner: pi, dest: u, pct: o.pct, next: o.next, state: o.state });
+        }
+      }
+    }
+    if (!out.length) out.push([u, -REJECT.notYours]);
+    this.remember(p, cmdId, out);
+    return out;
+  }
+
+  /** Update the dispatch percentage on all active persistent orders of player `pi`. */
+  setAutoPct(pi, pct) {
+    if (this.winner !== null || !this.alive[pi]) return 0;
+    pct = Math.max(0.05, Math.min(1, Number(pct) || 0.5));
+    let n = 0;
+    for (const o of this.autos.values()) {
+      if (o.owner !== pi) continue;
+      o.pct = pct;
+      n++;
+    }
+    return n;
   }
 
   remember(p, cmdId, results) {
@@ -773,47 +910,97 @@ class Game {
     if (p.results.size > 32) p.results.delete(p.results.keys().next().value);
   }
 
-  /** A player's persistent orders as [source, destination, percent, state], by source. */
+  /** A player's persistent orders as [source, destination, percent, state], sorted by source then destination. */
   autoList(pi) {
     const out = [];
-    for (const [src, o] of this.autos) if (o.owner === pi) out.push([src, o.dest, Math.round(o.pct * 100), o.state]);
-    return out.sort((a, b) => a[0] - b[0]);
+    for (const o of this.autos.values()) if (o.owner === pi) out.push([o.src, o.dest, Math.round(o.pct * 100), o.state]);
+    return out.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   }
 
   /**
-   * One step of every persistent order, in city order. Each cycle works from the
-   * garrison as it is now, after production, arrivals, battles and any manual
-   * orders: nothing is owed from cycles that could not send, so no backlog builds.
+   * One step of every persistent order, grouped by source city in id order.
+   * When a city has multiple parallel routes ready at once, its dispatch pool is split
+   * evenly across them (rotating round-robin when troops are limited so no route starves).
    */
   runAuto() {
     if (!this.autos.size) return;
     const t = this.t, A = B.auto;
-    for (const id of [...this.autos.keys()].sort((a, b) => a - b)) {
-      const o = this.autos.get(id), src = this.nodes[id];
-      if (src.owner !== o.owner || !this.alive[o.owner]) {         // lost: the new owner inherits nothing
-        this.autos.delete(id);
-        this.outEvents.push({ k: 'auto', p: o.owner, src: id, why: 'lost' });
+    const bySrc = new Map();
+    for (const [key, o] of this.autos) {
+      let list = bySrc.get(o.src);
+      if (!list) bySrc.set(o.src, list = []);
+      list.push([key, o]);
+    }
+    for (const id of [...bySrc.keys()].sort((a, b) => a - b)) {
+      const entries = bySrc.get(id).sort((p, q) => p[1].dest - q[1].dest);
+      const src = this.nodes[id];
+      const lostOwners = new Set();
+      const activeEntries = [];
+      for (const [key, o] of entries) {
+        if (src.owner !== o.owner || !this.alive[o.owner]) {
+          this.autos.delete(key);
+          lostOwners.add(o.owner);
+        } else activeEntries.push(o);
+      }
+      for (const owner of lostOwners) this.outEvents.push({ k: 'auto', p: owner, src: id, why: 'lost' });
+      if (!activeEntries.length) continue;
+
+      const due = activeEntries.filter(o => t >= o.next);
+      if (!due.length) continue;
+      if (src.siege.some(a => a.groups.length > 0)) {
+        for (const o of due) { o.state = AUTO.siege; o.next = t + A.retry; }
         continue;
       }
-      if (t < o.next) continue;
-      o.next = t + A.retry;
-      if (src.siege.some(a => a.groups.length > 0)) { o.state = AUTO.siege; continue; }   // a city under attack keeps its garrison
-      if (!this.route(o.owner, id, o.dest)) { o.state = AUTO.blocked; continue; }
-      let n = this.dispatchCount(src.units, o.pct);
-      const dst = this.nodes[o.dest];
-      if (dst.owner === o.owner) {
-        const room = Math.floor(this.room(dst, o.owner));
-        if (room < A.minDispatch) { o.state = AUTO.full; continue; }                       // the destination has no room: wait
-        n = Math.min(n, room);
+      const ready = [];
+      for (const o of due) {
+        if (!this.route(o.owner, id, o.dest)) { o.state = AUTO.blocked; o.next = t + A.retry; continue; }
+        // A friendly destination takes reinforcements only up to its capacity: with no room, this route waits.
+        const dst = this.nodes[o.dest];
+        const room = dst.owner === o.owner ? Math.floor(this.room(dst, o.owner)) : Infinity;
+        if (room < A.minDispatch) { o.state = AUTO.full; o.next = t + A.retry; continue; }
+        ready.push({ o, room });
       }
-      if (n < A.minDispatch) { o.state = AUTO.troops; continue; }
-      const r = this.route(o.owner, id, o.dest, n);
-      if (!r) { o.state = AUTO.blocked; continue; }
-      const a = this.launch(o.owner, id, r.path, takeSoldiers(src.groups, n));
-      a.order = this.nextOrder++;
-      a.auto = true;
-      o.state = AUTO.active;
-      o.next = t + A.interval;
+      if (!ready.length) continue;
+
+      // Send `n` soldiers for order `o`, by the route that can carry that many (a wormhole has a limit).
+      const go = (o, n, orderId) => {
+        const r = this.route(o.owner, id, o.dest, n);
+        if (!r) { o.state = AUTO.blocked; o.next = t + A.retry; return; }
+        const a = this.launch(o.owner, id, r.path, takeSoldiers(src.groups, n));
+        a.order = orderId;
+        a.auto = true;
+        o.state = AUTO.active;
+        o.next = t + A.interval;
+      };
+
+      if (ready.length === 1) {
+        const { o, room } = ready[0];
+        const n = Math.min(this.dispatchCount(src.units, o.pct), room);
+        if (n < A.minDispatch) { o.state = AUTO.troops; o.next = t + A.retry; continue; }
+        go(o, n, this.nextOrder++);
+      } else {
+        const maxPct = Math.max(...ready.map(x => x.o.pct));
+        const pool = this.dispatchCount(src.units, maxPct);
+        if (pool < A.minDispatch) {
+          for (const { o } of ready) { o.state = AUTO.troops; o.next = t + A.retry; }
+          continue;
+        }
+        const k = ready.length;
+        const can = Math.min(k, Math.floor(pool / A.minDispatch));
+        const rr = (this.autoRR.get(id) || 0) % k;
+        const ordered = [];
+        for (let i = 0; i < k; i++) ordered.push(ready[(rr + i) % k]);
+        this.autoRR.set(id, (rr + can) % k);
+        const base = Math.floor(pool / can), rem = pool % can;
+        const orderId = this.nextOrder++;
+        for (let i = 0; i < k; i++) {
+          const { o, room } = ordered[i];
+          if (i >= can) { o.state = AUTO.troops; o.next = t + A.retry; continue; }
+          const share = Math.min(base + (i < rem ? 1 : 0), src.units - B.dispatch.minGarrison, room);
+          if (share < 1) { o.state = AUTO.troops; o.next = t + A.retry; continue; }
+          go(o, share, orderId);
+        }
+      }
     }
   }
 

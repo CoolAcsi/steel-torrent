@@ -515,7 +515,7 @@ function fullState(room) {
 function startMsg(room, idx) {
   const g = room.game;
   return {
-    t: 'start', you: idx, cfg: BALANCE, opts: room.opts,
+    t: 'start', you: idx, cfg: BALANCE, opts: room.opts, tutorial: room.tutorial ? true : undefined,
     map: { w: g.w, h: g.h, nodes: g.nodes.map(n => [n.x, n.y]), edges: g.edges },
     players: room.order.map(p => ({ name: p.name, color: p.color, ai: p.bot, bot: p.bot ? p.botIdx : -1, faction: p.faction, sub: p.sub })),
     time: +g.t.toFixed(3), q: room.q, ...fullState(room),
@@ -1044,16 +1044,30 @@ const handlers = {
     if (id !== null) send(c.ws, { t: 'ack', id, to: m.to | 0, res: made.results, paused: made.paused || undefined });
   },
 
-  // Persistent orders: these cities keep sending to one destination until told to stop.
-  // The orders live in the simulation and are executed there; the client never repeats anything.
+  // Persistent orders: cities keep sending along one or more parallel routes until told to stop.
+  // Supports either { from: [...], to, pct } / { from: [...], to?, off: true } or batch { pairs: [[src, dst], ...], pct }.
   auto(c, m) {
     const s = seat(c);
     if (!s) return;
-    if (!Array.isArray(m.from) || m.from.length > 64 || !m.from.every(Number.isInteger)) return;
+    if (m.setPct) {
+      s.game.setAutoPct(s.idx, m.pct);
+      syncAuto(c.room, c.room.order[s.idx]);
+      return;
+    }
     const id = Number.isInteger(m.id) ? m.id : null;
-    const res = m.off ? s.game.clearAuto(s.idx, m.from, id) : s.game.setAuto(s.idx, m.from, m.to | 0, m.pct, id);
+    let res;
+    if (m.off && Number.isInteger(m.segFrom) && Number.isInteger(m.segTo)) {
+      res = s.game.clearAutoSegment(s.idx, m.segFrom, m.segTo, id);
+    } else if (!m.off && Array.isArray(m.pairs)) {
+      if (m.pairs.length > 128 || !m.pairs.every(p => Array.isArray(p) && p.length >= 2 && Number.isInteger(p[0]) && Number.isInteger(p[1]))) return;
+      res = s.game.setAutoPairs(s.idx, m.pairs, m.pct, id, !!m.replace);
+    } else {
+      if (!Array.isArray(m.from) || m.from.length > 64 || !m.from.every(Number.isInteger)) return;
+      const to = Number.isInteger(m.to) ? m.to : -1;
+      res = m.off ? s.game.clearAuto(s.idx, m.from, id, to) : s.game.setAuto(s.idx, m.from, to, m.pct, id);
+    }
     pump(c.room, false, false);
-    if (id !== null) send(c.ws, { t: 'ack', id, auto: m.off ? 'off' : 'on', to: m.to | 0, res: [...res], paused: res.paused || undefined });
+    if (id !== null) send(c.ws, { t: 'ack', id, auto: m.off ? 'off' : 'on', to: Number.isInteger(m.to) ? m.to : -1, res: [...res], paused: res.paused || undefined });
   },
 
   // Cancel one marching army's order (it holds where it stands), or give it a new destination.

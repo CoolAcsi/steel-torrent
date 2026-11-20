@@ -188,6 +188,8 @@
       <button data-pct="1">100%</button>
     </div>
     <button id="btn-auto" class="btn tiny auto" data-i18n-attr="title:hud.autoTitle"><svg class="ico"><use href="#i-auto"/></svg><span data-i18n="hud.auto"></span></button>
+    <button id="btn-rally" class="btn tiny rally" data-i18n-attr="title:hud.rallyTitle"><span data-i18n="hud.rally"></span></button>
+    <button id="btn-rally-go" class="btn tiny rally-go hidden"></button>
     <button id="btn-auto-stop" class="btn tiny hidden"></button>
   </div>
 
@@ -229,6 +231,10 @@
   </div>
 
   <button id="btn-upgrade" class="hidden"><svg class="ico"><use href="#i-up"/></svg><span></span></button>
+  <div id="city-actions" class="hidden">
+    <button id="ca-only" class="btn tiny" type="button"></button>
+    <button id="ca-add" class="btn tiny" type="button"></button>
+  </div>
   <div id="banner" class="hidden"></div>
 
   <div id="keys" class="hidden" role="dialog" aria-modal="true">
@@ -245,6 +251,7 @@
         <div><dt><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><kbd>4</kbd></dt><dd data-i18n="keys.amount"></dd></div>
         <div><dt><kbd>U</kbd><kbd data-i18n="keys.space"></kbd></dt><dd data-i18n="keys.upgrade"></dd></div>
         <div><dt><kbd>R</kbd></dt><dd data-i18n="keys.auto"></dd></div>
+        <div><dt><kbd>G</kbd></dt><dd data-i18n="keys.rally"></dd></div>
         <div><dt><kbd>Del</kbd></dt><dd data-i18n="keys.autoStop"></dd></div>
         <div><dt><kbd>×</kbd></dt><dd data-i18n="keys.routeCancel"></dd></div>
         <div><dt><kbd>⇢</kbd></dt><dd data-i18n="keys.column"></dd></div>

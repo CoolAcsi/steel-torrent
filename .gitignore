@@ -2,21 +2,19 @@ node_modules/
 .DS_Store
 .env
 
-# Local agent tooling installed on this machine: not part of the project.
+# 本地开发工具配置（不入库）
+# Local development tooling on this machine: not part of the project.
 .agents/
-.claude/skills/
 .aiden/
 .coco/
 .hermes/
 .trae/
 .trae-cn/
+.claude/
 agentbuddy.yaml
 agentbuddy-lock.yaml
 
 # Screenshots of the room panel show the host's network invite addresses.
-docs/screenshots/after-room-zh.jpg
-docs/screenshots/before-room.jpg
-docs/screenshots/factions-lobby-picker.jpg
 docs/screenshots/r6-lobby-1-room.jpg
 docs/screenshots/r6-lobby-2-ready-waiting.jpg
 docs/screenshots/r6-lobby-3-idle-host-kick.jpg

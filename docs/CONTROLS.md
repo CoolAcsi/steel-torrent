@@ -116,13 +116,25 @@ effects are never replayed.
 and a charged superweapon. It exists to demonstrate and screenshot
 superweapons and is how the shots in `docs/screenshots/super-*` were taken.
 
+## Dispatch modes (merged from the v8 line)
+
+These supersede the single-route description above wherever they differ.
+
+- **Auto dispatch is on by default** in a match: a drag sets a persistent route. The Auto button (R) switches to single dispatch, where a drag sends once. Tutorial lessons start in single dispatch.
+- **Several routes per base.** A base may feed any number of destinations at once (`autos` is keyed by source and destination). When several are due together the dispatch pool is split evenly, rotating when troops are short so no route starves. Each still obeys the destination's capacity and waits, `full`, when there is no room.
+- **One direction per road.** A new route overwrites any of the player's routes that use the same road the other way.
+- **Chain drag.** Dragging from one base across others builds a relay a→b→c (`{t:'auto', pairs}`). In single dispatch the same gesture sends once along each leg.
+- **Fan-in.** Shift-click several bases (or press A for all), then drag from one of them: every selected base plans its own route to the one destination.
+- **Rally / Attack (G).** Pick one or more targets; the client plans evenly balanced routes from all bases (`planBalancedDispatch` in `public/js/route.js`) and replaces the current routes. Hovering a base offers the same as buttons.
+- **Changing the send percentage** updates every active route (`{t:'auto', setPct}`).
+
 ## Cancelling orders
 
-- **Hover a route** of yours and a × appears on it, with the kind of order next to it; the route is lit from end to end and its source and destination are ringed. Routes that overlap each get their own ×, side by side. Clicking a × never reaches the map underneath.
-- **Persistent route** (`{t:'auto', off:true}`): the base stops sending. Columns already marching keep their orders.
+- **Hover the route of a marching column** and a × appears on it, labelled with the column's size; the route is lit from end to end and its destination is ringed. Columns whose routes overlap each get their own ×, side by side. Clicking a × never reaches the map underneath.
+- **Persistent route**: every road segment of an active route carries its own ×. Clicking it stops dispatch along that segment (`{t:'auto', off:true, segFrom, segTo}`); a longer route is cut back to end where the segment began. Del, or the Stop button, stops every route from the selected bases. Columns already marching keep their orders.
 - **Marching column** (`{t:'halt', army, id}`): it stops where it stands and holds (white dashed plate, HOLD tag). Its place at the destination is released at once. It is still in the world: it fights anything that reaches it. Nobody is deleted or moved.
 - **New orders** (`{t:'redirect', army, to, id}`): click a column of yours (held, waiting outside a full base, or marching), then a base. It plans from where it stands.
-- **Touch, or without hovering**: select the base to get the × for its persistent route (or use the Auto button / Del); tap a column to select it and get its ×.
+- **Touch, or without hovering**: the × on persistent routes is always shown; tap a column to select it and get its ×.
 - All three commands carry an id and are processed once; a paused match refuses them without consuming the id.
 
 ## Camera

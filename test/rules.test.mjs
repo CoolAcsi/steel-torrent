@@ -642,7 +642,7 @@ section('nuclear strike: the targeted base becomes a neutral ruin with its roads
   ready(g, FOE);
   as(g, FOE, 'veil/dominion');
   assert(g.skill(FOE, 0, { node: 3 }).ok, 'an emplacement beside the doomed base');
-  g.setAuto(FOE, [3], 4, 0.5, 1); g.setAuto(FOE, [4], 3, 0.5, 2); g.setAuto(FOE, [9], 4, 0.5, 3);
+  g.setAuto(FOE, [3], 2, 0.5, 1); g.setAuto(FOE, [4], 3, 0.5, 2); g.setAuto(FOE, [9], 4, 0.5, 3);   // from the base, to the base, and one that has nothing to do with it
   g.autos.forEach(o => { o.next = 1e9; });                            // keep them from sending during the test
   const column = army(g, FOE, 4, 3, 20, 200 - 60), away = army(g, FOE, 9, 4, 20, 20), mineNear = army(g, ME, 2, 3, 12, 200 - 80);
   const hpCol = hpOf(column.groups), hpAway = hpOf(away.groups), hpMine = hpOf(mineNear.groups);
